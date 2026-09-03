@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 
 from backend.app.database import get_db
 from backend.app.deps import get_admin_user
-from backend.app.models import Clip, Movie, RenderJob, RenderJobAttempt, User, Video
+from backend.app.models import Movie, RenderJob, RenderJobAttempt, RenderJobClipResult, User, Video
 from backend.app.schemas import (
     AdminDashboardResponse,
     AdminErrorResponse,
@@ -116,7 +116,11 @@ def admin_errors(
                 ["failed", "partial_failure", "provider_rejected"]
             )
         )
-        .options(selectinload(RenderJobAttempt.clip_results))
+        .options(
+            selectinload(RenderJobAttempt.clip_results).selectinload(
+                RenderJobClipResult.clip
+            )
+        )
         .order_by(RenderJobAttempt.created_at.desc())
     ).all()
 
@@ -129,7 +133,7 @@ def admin_errors(
             RenderClipResultResponse(
                 id=result.id,
                 clipId=result.clip_id,
-                clipName=(db.get(Clip, result.clip_id).original_name if db.get(Clip, result.clip_id) else result.clip_id),
+                clipName=result.clip.original_name if result.clip else "Deleted clip",
                 clipOrderIndex=result.clip_order_index,
                 status=result.status,
                 reasonCode=result.reason_code,

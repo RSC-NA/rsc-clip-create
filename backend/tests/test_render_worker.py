@@ -1,51 +1,103 @@
+import pytest
+
 from backend.app.models import Clip, Movie, MovieSlot, RenderJob, RenderJobAttempt, User, Video
 from backend.app.services.render_worker import process_next_job
+from backend.app.services.renderer import RenderError
 
 
-class FakeVeoClient:
-    def submit_render(self, clip_paths, overlay_texts):
-        return {
-            "request_id": "req-test-123",
-            "status": "submitted",
-            "clip_count": len(clip_paths),
-            "overlay_count": len([text for text in overlay_texts if text]),
-        }
-
-
-def test_process_next_job_marks_attempt_success_and_creates_video(db_session):
+def _movie_with_clips(db, clip_count=2, *, team="Falcons", tier="Gold"):
     user = User(discord_user_id="123", display_name="Admin")
-    db_session.add(user)
-    db_session.flush()
+    db.add(user)
+    db.flush()
 
     movie = Movie(user_id=user.id, title="Launch Reel")
-    db_session.add(movie)
-    db_session.flush()
+    db.add(movie)
+    db.flush()
 
-    clip_one = Clip(user_id=user.id, original_name="clip-a.mp4", storage_path="storage/clips/a.mp4")
-    clip_two = Clip(user_id=user.id, original_name="clip-b.mp4", storage_path="storage/clips/b.mp4")
-    db_session.add_all([clip_one, clip_two])
-    db_session.flush()
-
-    db_session.add_all(
-        [
-            MovieSlot(movie_id=movie.id, clip_id=clip_one.id, sort_index=0, overlay_text="Open strong"),
-            MovieSlot(movie_id=movie.id, clip_id=clip_two.id, sort_index=1, overlay_text="Close with CTA"),
-        ]
-    )
+    for index in range(clip_count):
+        clip = Clip(
+            user_id=user.id,
+            original_name=f"{team}-player{index}-{tier}.mp4",
+            storage_path=f"storage/clips/{index}.mp4",
+            team=team,
+            player=f"player{index}",
+            tier=tier,
+            extension="mp4",
+        )
+        db.add(clip)
+        db.flush()
+        db.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=index, overlay_text=""))
 
     job = RenderJob(movie_id=movie.id, status="queued")
-    db_session.add(job)
-    db_session.flush()
+    db.add(job)
+    db.flush()
     attempt = RenderJobAttempt(render_job_id=job.id, attempt_number=1, status="queued")
-    db_session.add(attempt)
-    db_session.flush()
+    db.add(attempt)
+    db.flush()
     job.latest_attempt_id = attempt.id
+    db.commit()
+    return movie, job
+
+
+def test_success_creates_video_and_accepts_every_clip(db_session):
+    _movie_with_clips(db_session, 3)
+    captured = {}
+
+    def fake_render(clips, output, options=None):
+        captured["clips"] = clips
+        captured["options"] = options
+        return {"duration": 46.2, "frames": 1386}
+
+    processed = process_next_job(db_session, renderer=fake_render)
+    video = db_session.query(Video).one()
+
+    assert processed.status == "succeeded"
+    assert processed.accepted_clip_count == 3
+    assert processed.failed_clip_count == 0
+    assert video.status == "succeeded"
+    assert video.duration_seconds == 46.2
+    assert len(captured["clips"]) == 3
+    # Clips are handed to the renderer in timeline order.
+    assert [c.name.player for c in captured["clips"]] == ["player0", "player1", "player2"]
+
+
+def test_render_error_marks_job_and_clips_failed(db_session):
+    _movie_with_clips(db_session, 2)
+
+    def failing(clips, output, options=None):
+        raise RenderError("ffmpeg exploded", "overlay")
+
+    processed = process_next_job(db_session, renderer=failing)
+
+    assert processed.status == "failed"
+    assert processed.failed_clip_count == 2
+    assert db_session.query(Video).count() == 0
+    attempt = processed.attempts[0]
+    assert attempt.failure_stage == "overlay"
+    assert "ffmpeg exploded" in attempt.error_summary
+
+
+def test_clips_missing_metadata_are_rejected_not_rendered(db_session):
+    """Metadata validation used to be gated on the old Veo test seam, so it was
+    skipped exactly when the seam was in use."""
+    movie, _ = _movie_with_clips(db_session, 2)
+    clip = db_session.query(Clip).first()
+    clip.team = None
     db_session.commit()
 
-    processed = process_next_job(db_session, FakeVeoClient())
-    created_video = db_session.query(Video).one()
+    called = False
 
-    assert processed is not None
-    assert processed.status == "succeeded"
-    assert processed.accepted_clip_count == 2
-    assert created_video.status == "succeeded"
+    def fake_render(clips, output, options=None):
+        nonlocal called
+        called = True
+        return {"duration": 1.0}
+
+    processed = process_next_job(db_session, renderer=fake_render)
+
+    # One valid clip left, which is below min_clip_count.
+    assert processed.status == "failed"
+    assert called is False
+
+
+def test_no_queued_job_returns_none(db_session):
+    assert process_next_job(db_session, renderer=lambda *a, **k: {}) is None

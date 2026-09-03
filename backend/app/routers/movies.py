@@ -9,6 +9,7 @@ from backend.app.database import get_db
 from backend.app.config import get_settings
 from backend.app.deps import get_current_user
 from backend.app.models import Clip, Movie, MovieSlot, RenderJob, RenderJobAttempt, User, Video
+from backend.app.services.brand import DEFAULT_FAMILY, TRANSITION_FAMILIES
 from backend.app.schemas import (
     ClipResponse,
     MovieCreateRequest,
@@ -25,6 +26,18 @@ from backend.app.schemas import (
 
 router = APIRouter(prefix="/movies", tags=["movies"])
 settings = get_settings()
+
+
+def _style_of(movie: Movie) -> str:
+    return movie.transition_style or settings.render_transition_style or DEFAULT_FAMILY
+
+
+def _hold_of(movie: Movie) -> float:
+    return (
+        movie.transition_hold_seconds
+        if movie.transition_hold_seconds is not None
+        else settings.render_sting_hold_seconds
+    )
 
 
 def _video_summary(video: Video | None) -> VideoSummaryResponse | None:
@@ -71,7 +84,7 @@ def _job_response(job: RenderJob) -> RenderJobResponse:
             RenderClipResultResponse(
                 id=result.id,
                 clipId=result.clip_id,
-                clipName=result.clip.original_name if result.clip else result.clip_id,
+                clipName=result.clip.original_name if result.clip else "Deleted clip",
                 clipOrderIndex=result.clip_order_index,
                 status=result.status,
                 reasonCode=result.reason_code,
@@ -131,6 +144,8 @@ def list_movies(
                 updatedAt=movie.updated_at,
                 slotCount=len(movie.slots),
                 latestVideo=_video_summary(latest_video),
+                transitionStyle=_style_of(movie),
+                transitionHoldSeconds=_hold_of(movie),
             )
         )
     return responses
@@ -155,6 +170,8 @@ def create_movie(
         updatedAt=movie.updated_at,
         slotCount=0,
         latestVideo=None,
+        transitionStyle=_style_of(movie),
+        transitionHoldSeconds=_hold_of(movie),
     )
 
 
@@ -185,6 +202,9 @@ def get_movie(
         latestVideo=_video_summary(latest_video),
         clips=[_clip_response(clip) for clip in clips],
         slots=[_slot_response(slot) for slot in sorted(movie.slots, key=lambda item: item.sort_index)],
+        transitionStyle=_style_of(movie),
+        transitionHoldSeconds=_hold_of(movie),
+        transitionStyles=sorted(TRANSITION_FAMILIES),
     )
 
 
@@ -202,6 +222,16 @@ def update_timeline(
     )
     if movie is None:
         raise HTTPException(status_code=404, detail="Movie not found.")
+
+    if payload.transition_style is not None:
+        if payload.transition_style not in TRANSITION_FAMILIES:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Unknown transition style {payload.transition_style!r}.",
+            )
+        movie.transition_style = payload.transition_style
+    if payload.transition_hold_seconds is not None:
+        movie.transition_hold_seconds = payload.transition_hold_seconds
 
     movie.status = "editing"
     existing_by_id = {slot.id: slot for slot in movie.slots}
@@ -247,6 +277,18 @@ def queue_render(
     )
     if movie is None:
         raise HTTPException(status_code=404, detail="Movie not found.")
+
+    active = db.scalar(
+        select(RenderJob).where(
+            RenderJob.movie_id == movie.id,
+            RenderJob.status.in_(["queued", "running"]),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A render is already queued or running for this movie.",
+        )
 
     selected_slots = [slot for slot in sorted(movie.slots, key=lambda value: value.sort_index) if slot.clip_id]
     if len(selected_slots) < settings.min_clip_count:

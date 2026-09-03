@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import select
@@ -12,7 +13,7 @@ from backend.app.config import get_settings
 from backend.app.filename_parser import parse_clip_filename
 from backend.app.models import Clip, Movie, MovieSlot, User
 from backend.app.schemas import ClipResponse
-from backend.app.storage import probe_duration, save_upload
+from backend.app.storage import ProbeError, UploadTooLarge, probe_media, save_upload
 
 
 router = APIRouter(prefix="/clips", tags=["clips"])
@@ -51,7 +52,7 @@ def upload_clips(
     user: User = Depends(get_current_user),
 ):
     if not files:
-        raise HTTPException(status_code=400, detail="Upload at least two clips.")
+        raise HTTPException(status_code=400, detail="Select at least one clip to upload.")
     if len(files) > settings.max_clip_count:
         raise HTTPException(status_code=400, detail=f"Upload no more than {settings.max_clip_count} clips.")
 
@@ -63,19 +64,39 @@ def upload_clips(
             raise HTTPException(status_code=400, detail=f"{file.filename}: {exc}") from exc
 
     saved_clips: list[Clip] = []
-    created_paths = []
+    created_paths: list[Path] = []
+
+    def _abort(detail: str) -> HTTPException:
+        for path in created_paths:
+            path.unlink(missing_ok=True)
+        return HTTPException(status_code=400, detail=detail)
+
     for file, parsed in zip(files, parsed_files):
-        destination = save_upload(file, f"{uuid.uuid4()}-{file.filename}")
+        try:
+            # The size limit is enforced while streaming, not after the whole
+            # file has already been written to disk.
+            destination = save_upload(
+                file,
+                f"{uuid.uuid4()}-{file.filename}",
+                max_bytes=settings.max_clip_size_bytes,
+            )
+        except UploadTooLarge:
+            raise _abort(f"Clip {file.filename} exceeds the file-size limit.") from None
         created_paths.append(destination)
-        if destination.stat().st_size > settings.max_clip_size_bytes:
-            for path in created_paths:
-                path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"Clip {file.filename} exceeds the file-size limit.")
-        duration = probe_duration(destination)
+
+        try:
+            media = probe_media(destination, strict=True)
+        except ProbeError as exc:
+            raise _abort(f"Clip {file.filename} could not be read as video.") from exc
+        if not media.get("has_video"):
+            raise _abort(f"Clip {file.filename} has no video stream.")
+
+        duration = media.get("duration")
         if duration is not None and duration > settings.max_clip_duration_seconds:
-            for path in created_paths:
-                path.unlink(missing_ok=True)
-            raise HTTPException(status_code=400, detail=f"Clip {file.filename} exceeds the {settings.max_clip_duration_seconds:g} second limit.")
+            raise _abort(
+                f"Clip {file.filename} exceeds the "
+                f"{settings.max_clip_duration_seconds:g} second limit."
+            )
 
         clip = Clip(
             user_id=user.id,

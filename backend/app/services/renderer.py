@@ -1,13 +1,33 @@
+"""Two-pass FFmpeg renderer.
+
+Pass 1 normalizes every clip to one profile and burns its label. Pass 2 joins
+the normalized clips with generated blue/orange brand stings in a single
+filter graph.
+
+All timing is planned in INTEGER FRAMES, never floating-point seconds. xfade
+snaps its offsets to frame boundaries while acrossfade is sample-exact, so a
+plan expressed in seconds drifts audio away from video a little at every
+boundary and the error accumulates. At 30fps/48kHz one frame is exactly 1600
+samples, so a frame-based plan is simultaneously exact for both streams.
+"""
+
 from __future__ import annotations
 
+import logging
 import subprocess
 import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
-from PIL import Image, ImageDraw, ImageFont
-
+from backend.app.config import get_settings
 from backend.app.filename_parser import ParsedClipName
-from backend.app.storage import probe_media
+from backend.app.services import brand
+from backend.app.storage import ProbeError, probe_media
+
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 class RenderError(RuntimeError):
@@ -16,91 +36,399 @@ class RenderError(RuntimeError):
         self.stage = stage
 
 
+@dataclass(frozen=True)
+class ClipSpec:
+    source: Path
+    name: ParsedClipName
+    logo_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class RenderOptions:
+    movie_id: str
+    fps: int = 30
+    width: int = 1920
+    height: int = 1080
+    hold_frames: int = 18
+    blend_frames: int = 9
+    family: str = brand.DEFAULT_FAMILY
+    wordmark: str | None = None
+    font_path: Path | None = None
+    font_size: int = 42
+    logo_max_width: int = 260
+    blue: str = "#0B5CD5"
+    orange: str = "#FF7A18"
+
+    @property
+    def samples_per_frame(self) -> int:
+        return 48000 // self.fps
+
+
+@dataclass(frozen=True)
+class Segment:
+    path: Path
+    frames: int
+
+
+@dataclass
+class Boundary:
+    """One join between two clips, with its timing already resolved to frames."""
+
+    index: int
+    blend_frames: int
+    hold_frames: int
+    sting_offset: int = 0            # xfade offset, clip -> sting
+    clip_offset: int = 0             # xfade offset, sting -> next clip
+    spec: brand.StingSpec | None = None
+    png: Path | None = None
+
+    @property
+    def hard_cut(self) -> bool:
+        return self.spec is None
+
+    @property
+    def sting_frames(self) -> int:
+        return self.hold_frames + 2 * self.blend_frames
+
+
+def _frames_to_seconds(frames: int, fps: int) -> str:
+    return f"{frames / fps:.6f}"
+
+
 def _run(command: list[str], stage: str) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(command, capture_output=True, text=True, check=True)
+        return subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=settings.render_ffmpeg_timeout_seconds,
+        )
     except FileNotFoundError as exc:
         raise RenderError("FFmpeg and FFprobe must be installed on the worker.", stage) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RenderError(
+            f"FFmpeg timed out after {settings.render_ffmpeg_timeout_seconds}s.", stage
+        ) from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or exc.stdout or "Media command failed.").strip()[-2000:]
         raise RenderError(detail, stage) from exc
-    return result
 
 
-def _font() -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    candidates = [
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/System/Library/Fonts/HelveticaNeue.ttc",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for candidate in candidates:
-        if Path(candidate).is_file():
-            return ImageFont.truetype(candidate, 42)
-    return ImageFont.load_default()
+# --------------------------------------------------------------------------
+# Pass 1: normalize + label
+# --------------------------------------------------------------------------
+_NORMALIZE_TAIL = "fps={fps}:round=near,format=yuv420p,setsar=1,settb=1/{tb}"
 
 
-def _create_label_image(name: ParsedClipName, destination: Path) -> None:
-    image = Image.new("RGBA", (1920, 1080), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    font = _font()
-    text = name.label
-    left, top, right, bottom = draw.multiline_textbbox((0, 0), text, font=font, spacing=8)
-    text_width = right - left
-    text_height = bottom - top
-    box_left = 22
-    box_top = 1080 - text_height - 62
-    box_right = min(1898, box_left + text_width + 36)
-    box_bottom = 1060
-    draw.rounded_rectangle((box_left, box_top, box_right, box_bottom), radius=12, fill=(0, 0, 0, 140))
-    draw.multiline_text((40, box_top + 18), text, font=font, fill=(255, 255, 255, 255), spacing=8)
-    image.save(destination, format="PNG")
-
-
-def render_clip(source: Path, destination: Path, name: ParsedClipName, workdir: Path) -> None:
+def normalize_clip(
+    spec: ClipSpec, destination: Path, workdir: Path, options: RenderOptions
+) -> Segment:
+    """Render one clip to the common profile with its label burned in."""
+    source = spec.source
     if not source.exists():
         raise RenderError(f"Input clip is missing: {source.name}", "input")
-    label_file = workdir / f"{destination.stem}.png"
-    _create_label_image(name, label_file)
-    metadata = probe_media(source)
-    command = ["ffmpeg", "-y", "-i", str(source)]
-    if not metadata.get("has_audio"):
-        command += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000"]
-    label_input_index = 2 if not metadata.get("has_audio") else 1
-    command += ["-loop", "1", "-i", str(label_file)]
-    command += [
+
+    try:
+        media = probe_media(source, strict=True)
+    except ProbeError as exc:
+        # Never guess. Treating an unreadable probe as "no audio" is what used
+        # to silently replace a clip's real audio with silence.
+        raise RenderError(str(exc), "probe") from exc
+
+    duration = media.get("duration")
+    if not duration or duration <= 0:
+        raise RenderError(f"{source.name} has no usable duration.", "probe")
+    frames = max(1, int(duration * options.fps))
+
+    label_png = workdir / f"{destination.stem}-label.png"
+    brand.create_label_image(
+        spec.name,
+        label_png,
+        logo_path=spec.logo_path,
+        font_size=options.font_size,
+        font_path=options.font_path,
+        logo_max_width=options.logo_max_width,
+        canvas=(options.width, options.height),
+    )
+
+    has_audio = bool(media.get("has_audio"))
+    seconds = _frames_to_seconds(frames, options.fps)
+    tail = _NORMALIZE_TAIL.format(fps=options.fps, tb=options.fps * 1000)
+
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-nostdin",
+        "-i", str(source),
+        # Always present at index 1 so pass 2 can reference an audio stream on
+        # every intermediate unconditionally.
+        "-f", "lavfi", "-t", seconds, "-i", "anullsrc=r=48000:cl=stereo",
+        "-loop", "1", "-framerate", str(options.fps),
+        "-t", _frames_to_seconds(frames + options.fps, options.fps), "-i", str(label_png),
         "-filter_complex",
-        f"[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2:color=black[base];"
-        f"[{label_input_index}:v]format=rgba[label];[base][label]overlay=0:0:shortest=1[v]",
-        "-map", "[v]", "-map", "0:a:0?" if metadata.get("has_audio") else "1:a:0",
-        "-r", "30", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-ar", "48000", "-ac", "2", "-shortest", str(destination),
+        (
+            f"[0:v]scale={options.width}:{options.height}"
+            f":force_original_aspect_ratio=decrease:flags=bicubic,"
+            f"pad={options.width}:{options.height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"setsar=1,setpts=PTS-STARTPTS,"
+            f"tpad=stop_mode=clone:stop_duration=1,"
+            f"{tail},trim=end_frame={frames},setpts=PTS-STARTPTS[base];"
+            f"[2:v]format=rgba,setpts=PTS-STARTPTS[label];"
+            f"[base][label]overlay=0:0:format=auto:eof_action=pass,{tail}[v];"
+            f"[{'0:a:0' if has_audio else '1:a:0'}]aresample=48000:first_pts=0,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
+            f"atrim=end_sample={frames * options.samples_per_frame},asetpts=N/SR/TB[a]"
+        ),
+        "-map", "[v]", "-map", "[a]",
+        "-fps_mode", "cfr", "-r", str(options.fps),
+        "-c:v", "libx264", "-preset", settings.render_intermediate_preset,
+        "-crf", str(settings.render_intermediate_crf), "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", settings.render_audio_bitrate, "-ar", "48000", "-ac", "2",
+        str(destination),
     ]
     _run(command, "overlay")
 
+    # Trust the file, not the request: pass 2 re-trims to this number so any
+    # imprecision here is corrected rather than accumulated.
+    written = probe_media(destination)
+    actual = written.get("nb_frames") or frames
+    return Segment(path=destination, frames=max(1, min(frames, int(actual))))
 
-def render_movie(clips: list[tuple[Path, ParsedClipName]], output: Path) -> dict:
+
+# --------------------------------------------------------------------------
+# Pass 2: plan the joins
+# --------------------------------------------------------------------------
+def plan_boundaries(
+    segments: Sequence[Segment], options: RenderOptions, workdir: Path | None = None
+) -> list[Boundary]:
+    """Resolve every join to integer frame offsets.
+
+    Running offsets, where L_i is the accumulated length after clip i:
+
+        O_sting(i)  = L_i - b_i
+        O_clip(i+1) = L_i + d_i
+        L_(i+1)     = L_i + d_i + N_(i+1)
+
+    L depends only on the hold d, not on the blend b, so the final duration is
+    sum(clip frames) + sum(hold frames).
+    """
+    boundaries: list[Boundary] = []
+    if len(segments) < 2:
+        return boundaries
+
+    running = segments[0].frames
+    for index in range(len(segments) - 1):
+        current, following = segments[index], segments[index + 1]
+        # Each clip must keep at least one frame that is not mid-transition.
+        blend = min(options.blend_frames, current.frames - 1, following.frames - 1)
+        hold = options.hold_frames
+
+        if hold <= 0 or blend < 1:
+            # Degrade to a hard cut. xfade cannot take duration=0, so these
+            # pairs are joined with the concat filter instead.
+            boundary = Boundary(index=index, blend_frames=0, hold_frames=0)
+            running += following.frames
+            if blend < 1 and hold > 0:
+                logger.warning(
+                    "boundary %d falls back to a hard cut: adjacent clips are too short",
+                    index,
+                )
+        else:
+            spec = brand.plan_sting(
+                options.movie_id, index, options.family,
+                sting_frames=hold + 2 * blend, fps=options.fps,
+                size=(options.width, options.height),
+                blue=options.blue, orange=options.orange,
+            )
+            png = (workdir / f"sting-{index:04d}.png") if workdir else None
+            if png is not None:
+                brand.create_sting_image(
+                    spec, png, wordmark=options.wordmark, font_path=options.font_path
+                )
+            boundary = Boundary(
+                index=index, blend_frames=blend, hold_frames=hold,
+                sting_offset=running - blend, clip_offset=running + hold,
+                spec=spec, png=png,
+            )
+            running += hold + following.frames
+        boundaries.append(boundary)
+    return boundaries
+
+
+def total_frames(segments: Sequence[Segment], boundaries: Sequence[Boundary]) -> int:
+    return sum(s.frames for s in segments) + sum(b.hold_frames for b in boundaries)
+
+
+# --------------------------------------------------------------------------
+# Pass 2: build the graph
+# --------------------------------------------------------------------------
+def build_chain_command(
+    segments: Sequence[Segment],
+    boundaries: Sequence[Boundary],
+    output: Path,
+    options: RenderOptions,
+) -> list[str]:
+    """Pure function: the full ffmpeg argv for the join pass.
+
+    Kept free of side effects so the filter graph -- the part most likely to be
+    subtly wrong -- can be asserted in a unit test without running ffmpeg.
+    """
+    fps, spf = options.fps, options.samples_per_frame
+    tail = _NORMALIZE_TAIL.format(fps=fps, tb=fps * 1000)
+
+    inputs: list[str] = []
+    graph: list[str] = []
+    input_index = 0
+    clip_inputs: list[int] = []
+    sting_inputs: dict[int, int] = {}
+
+    for position, segment in enumerate(segments):
+        inputs += ["-i", str(segment.path)]
+        clip_inputs.append(input_index)
+        input_index += 1
+        if position < len(boundaries):
+            boundary = boundaries[position]
+            if not boundary.hard_cut and boundary.png is not None:
+                # Two frames of slack: the second xfade consumes the accumulated
+                # stream to its last frame, so a sting that is exactly S long
+                # can be read past its end.
+                inputs += [
+                    "-loop", "1", "-framerate", str(fps),
+                    "-t", _frames_to_seconds(boundary.sting_frames + 2, fps),
+                    "-i", str(boundary.png),
+                ]
+                sting_inputs[position] = input_index
+                input_index += 1
+
+    # Normalize every branch identically -- xfade rejects mismatched size, SAR
+    # or timebase.
+    for position, segment in enumerate(segments):
+        idx = clip_inputs[position]
+        graph.append(
+            f"[{idx}:v]{tail},trim=end_frame={segment.frames},setpts=PTS-STARTPTS[v{position}]"
+        )
+        graph.append(
+            f"[{idx}:a]aresample=48000:first_pts=0,"
+            f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
+            f"atrim=end_sample={segment.frames * spf},asetpts=N/SR/TB[a{position}]"
+        )
+
+    for position, boundary in enumerate(boundaries):
+        if boundary.hard_cut:
+            continue
+        spec = boundary.spec
+        if position not in sting_inputs or spec is None:
+            # plan_boundaries was called without a workdir, so no sting art was
+            # written. Fail clearly rather than with a KeyError deep in the graph.
+            raise RenderError(
+                f"Boundary {position} has no sting image; "
+                "plan_boundaries() needs a workdir to render one.",
+                "setup",
+            )
+        idx = sting_inputs[position]
+        graph.append(
+            f"[{idx}:v]crop={options.width}:{options.height}"
+            f":x='{spec.pan_x_expr}':y='{spec.pan_y_expr}',{tail},"
+            f"trim=end_frame={boundary.sting_frames},setpts=PTS-STARTPTS[s{position}]"
+        )
+        graph.append(
+            f"anullsrc=r=48000:cl=stereo:d={_frames_to_seconds(boundary.sting_frames, fps)},"
+            f"atrim=end_sample={boundary.sting_frames * spf},asetpts=N/SR/TB[sa{position}]"
+        )
+
+    video, audio = "v0", "a0"
+    for position, boundary in enumerate(boundaries):
+        nxt = position + 1
+        if boundary.hard_cut:
+            graph.append(f"[{video}][v{nxt}]concat=n=2:v=1:a=0[vx{position}]")
+            graph.append(f"[{audio}][a{nxt}]concat=n=2:v=0:a=1[ax{position}]")
+            video, audio = f"vx{position}", f"ax{position}"
+            continue
+
+        spec = boundary.spec
+        assert spec is not None
+        blend = _frames_to_seconds(boundary.blend_frames, fps)
+        samples = boundary.blend_frames * spf
+
+        graph.append(
+            f"[{video}][s{position}]xfade=transition={spec.transition_in}"
+            f":duration={blend}:offset={_frames_to_seconds(boundary.sting_offset, fps)}"
+            f"[vs{position}]"
+        )
+        graph.append(
+            f"[vs{position}][v{nxt}]xfade=transition={spec.transition_out}"
+            f":duration={blend}:offset={_frames_to_seconds(boundary.clip_offset, fps)}"
+            f"[vx{position}]"
+        )
+        graph.append(f"[{audio}][sa{position}]acrossfade=ns={samples}:c1=tri:c2=tri[as{position}]")
+        graph.append(f"[as{position}][a{nxt}]acrossfade=ns={samples}:c1=tri:c2=tri[ax{position}]")
+        video, audio = f"vx{position}", f"ax{position}"
+
+    return [
+        "ffmpeg", "-y", "-hide_banner", "-nostdin",
+        *inputs,
+        "-filter_complex", ";".join(graph),
+        "-map", f"[{video}]", "-map", f"[{audio}]",
+        "-fps_mode", "cfr", "-r", str(fps),
+        "-c:v", "libx264", "-preset", settings.render_final_preset,
+        "-crf", str(settings.render_final_crf), "-pix_fmt", "yuv420p",
+        "-profile:v", "high", "-level", "4.1",
+        "-c:a", "aac", "-b:a", settings.render_audio_bitrate, "-ar", "48000", "-ac", "2",
+        "-movflags", "+faststart",
+        str(output),
+    ]
+
+
+# --------------------------------------------------------------------------
+# Entry point
+# --------------------------------------------------------------------------
+def render_movie(
+    clips: Sequence[ClipSpec], output: Path, options: RenderOptions | None = None
+) -> dict:
+    """Normalize every clip, then join them with brand stings.
+
+    Returns the probed metadata of the finished file, enriched with the
+    transition decisions so the admin console and tests can inspect them.
+    """
+    if not clips:
+        raise RenderError("A render needs at least one clip.", "input")
+    options = options or RenderOptions(movie_id=output.stem)
+
+    # 2n-1 inputs are opened at once in pass 2. Guard the descriptor/decoder
+    # budget with a clear error rather than an opaque ffmpeg failure.
+    if len(clips) > settings.render_max_graph_inputs:
+        raise RenderError(
+            f"This movie has {len(clips)} clips; the renderer joins at most "
+            f"{settings.render_max_graph_inputs} in one pass.",
+            "input",
+        )
+
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clip-create-") as temporary:
         workdir = Path(temporary)
-        intermediates: list[Path] = []
-        for index, (source, name) in enumerate(clips):
-            destination = workdir / f"clip-{index:04d}.mp4"
-            render_clip(source, destination, name, workdir)
-            intermediates.append(destination)
-
-        concat_file = workdir / "concat.txt"
-        concat_file.write_text(
-            "\n".join(f"file '{path}'" for path in intermediates) + "\n",
-            encoding="utf-8",
+        segments = [
+            normalize_clip(spec, workdir / f"clip-{index:04d}.mp4", workdir, options)
+            for index, spec in enumerate(clips)
+        ]
+        boundaries = plan_boundaries(segments, options, workdir)
+        expected = total_frames(segments, boundaries)
+        logger.info(
+            "joining %d clips with %d transitions (%d expected frames, %.3fs)",
+            len(segments), sum(0 if b.hard_cut else 1 for b in boundaries),
+            expected, expected / options.fps,
         )
-        _run(
-            ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(concat_file), "-c", "copy", str(output)],
-            "concat",
-        )
+        _run(build_chain_command(segments, boundaries, output, options), "concat")
 
     if not output.exists() or output.stat().st_size == 0:
         raise RenderError("FFmpeg did not produce an output file.", "verify")
     media = probe_media(output)
     if media.get("duration") is None:
         raise RenderError("The rendered output could not be verified.", "verify")
+
+    media["frames"] = expected
+    media["expected_duration"] = expected / options.fps
+    media["family"] = options.family
+    media["transitions"] = [
+        b.spec.as_metadata() if b.spec else {"boundary": b.index, "hard_cut": True}
+        for b in boundaries
+    ]
     return media

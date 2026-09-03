@@ -39,3 +39,8 @@ def parse_clip_filename(filename: str, allowed_extensions: set[str] | None = Non
     if not all((parsed.team, parsed.player, parsed.tier)):
         raise ValueError("Team, player, and tier must not be empty.")
     return parsed
+
+
+def normalize_team(team: str | None) -> str:
+    """Canonical form used to match a clip's team token to a stored logo."""
+    return (team or "").strip().lower()

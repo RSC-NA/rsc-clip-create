@@ -13,6 +13,15 @@ class SessionResponse(BaseModel):
     authEnabled: bool
 
 
+class ClientConfigResponse(BaseModel):
+    filenamePattern: str
+    supportedExtensions: list[str]
+    minClipCount: int
+    maxClipCount: int
+    maxClipSizeBytes: int
+    maxClipDurationSeconds: float
+
+
 class ClipResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -25,6 +34,15 @@ class ClipResponse(BaseModel):
     player: str | None
     tier: str | None
     extension: str | None
+
+
+class LogoResponse(BaseModel):
+    id: str
+    team: str
+    originalName: str
+    storagePath: str
+    imageUrl: str
+    createdAt: datetime
 
 
 class MovieSlotPayload(BaseModel):
@@ -40,6 +58,8 @@ class MovieCreateRequest(BaseModel):
 
 class MovieTimelineUpdateRequest(BaseModel):
     slots: list[MovieSlotPayload]
+    transition_style: str | None = None
+    transition_hold_seconds: float | None = Field(default=None, ge=0, le=3)
 
 
 class MovieSlotResponse(BaseModel):
@@ -68,16 +88,19 @@ class MovieSummaryResponse(BaseModel):
     updatedAt: datetime
     slotCount: int
     latestVideo: VideoSummaryResponse | None
+    transitionStyle: str
+    transitionHoldSeconds: float
 
 
 class MovieDetailResponse(MovieSummaryResponse):
     clips: list[ClipResponse]
     slots: list[MovieSlotResponse]
+    transitionStyles: list[str]
 
 
 class RenderClipResultResponse(BaseModel):
     id: str
-    clipId: str
+    clipId: str | None
     clipName: str
     clipOrderIndex: int
     status: str

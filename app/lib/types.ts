@@ -53,7 +53,7 @@ export type MovieDetail = MovieSummary & {
 
 export type RenderJobClipResult = {
   id: string;
-  clipId: string;
+  clipId: string | null;
   clipName: string;
   clipOrderIndex: number;
   status: string;

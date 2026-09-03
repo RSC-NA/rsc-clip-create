@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
+from backend.app.config import get_settings
 from backend.app.filename_parser import ParsedClipName
 from backend.app.models import Clip, Movie, RenderJob, RenderJobAttempt, RenderJobClipResult, Video
-from backend.app.services.renderer import RenderError, render_movie
-from backend.app.services.veo import VeoClient
+from backend.app.routers.logos import resolve_logo_path
+from backend.app.services import brand
+from backend.app.services.renderer import ClipSpec, RenderError, RenderOptions, render_movie
 from backend.app.storage import output_path
+
+
+logger = logging.getLogger(__name__)
+settings = get_settings()
 
 
 def _set_failure(job: RenderJob, attempt: RenderJobAttempt, message: str, stage: str) -> None:
@@ -26,11 +33,10 @@ def _set_failure(job: RenderJob, attempt: RenderJobAttempt, message: str, stage:
     job.final_status_reason = message[:500]
 
 
-def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=None) -> RenderJob | None:
+def process_next_job(db: Session, renderer=None) -> RenderJob | None:
     """Claim and process the oldest queued render.
 
-    ``veo_client`` remains as a compatibility seam for existing callers/tests; new
-    production calls use the local FFmpeg renderer.
+    ``renderer`` is an injection seam for tests; production uses ``render_movie``.
     """
     job = db.scalar(
         select(RenderJob)
@@ -47,14 +53,17 @@ def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=
         .values(status="running")
     )
     if claimed.rowcount != 1:
+        # Another worker won the race for this job.
         db.rollback()
         return None
     db.commit()
     db.refresh(job)
+    logger.info("claimed render job job_id=%s movie_id=%s", job.id, job.movie_id)
 
     movie = db.get(Movie, job.movie_id)
     attempt = db.scalar(select(RenderJobAttempt).where(RenderJobAttempt.id == job.latest_attempt_id))
     if movie is None or attempt is None:
+        logger.error("render job is missing its movie or attempt job_id=%s", job.id)
         if attempt:
             _set_failure(job, attempt, "Movie or render attempt was missing.", "setup")
         else:
@@ -71,15 +80,18 @@ def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=
             continue
         clip = db.get(Clip, slot.clip_id)
         if clip is None:
+            # The slot points at a clip row that no longer exists. Record the
+            # rejection against the slot; clip_id is left unset because it would
+            # not satisfy the foreign key.
             result = RenderJobClipResult(
                 render_job_attempt_id=attempt.id, movie_slot_id=slot.id,
-                clip_id=slot.clip_id or "missing", clip_order_index=slot.sort_index,
+                clip_id=None, clip_order_index=slot.sort_index,
                 submitted_clip_path="", status="rejected", failure_stage="input",
-                reason_code="invalid_metadata", reason_summary="Clip filename metadata is incomplete.",
+                reason_code="missing_clip", reason_summary="The selected clip no longer exists.",
             )
             db.add(result)
             continue
-        if veo_client is None and (not clip.team or not clip.player or not clip.tier):
+        if not clip.team or not clip.player or not clip.tier:
             result = RenderJobClipResult(
                 render_job_attempt_id=attempt.id, movie_slot_id=slot.id,
                 clip_id=clip.id, clip_order_index=slot.sort_index,
@@ -97,31 +109,57 @@ def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=
         selected.append((slot, clip, result))
     db.flush()
 
+    started = datetime.now(timezone.utc)
     try:
-        if len(selected) < 2:
-            raise RenderError("At least two valid clips are required.", "input")
-
-        # Keep the old fake client useful for the existing unit seam without
-        # allowing it to masquerade as a production render.
-        if veo_client is not None and renderer is None:
-            response = veo_client.submit_render(
-                [Path(clip.storage_path) for _, clip, _ in selected],
-                [slot.overlay_text for slot, _, _ in selected],
+        if len(selected) < settings.min_clip_count:
+            raise RenderError(
+                f"At least {settings.min_clip_count} valid clips are required.", "input"
             )
-            media = {"duration": None}
-            request_id = response.get("request_id")
-        else:
-            renderer = renderer or render_movie
-            media = renderer(
-                [(Path(clip.storage_path), ParsedClipName(clip.team, clip.player, clip.tier, clip.extension or "mp4")) for _, clip, _ in selected],
-                output_path(movie.id, attempt.id),
-            )
-            request_id = None
 
-        for _, clip, result in selected:
+        destination = output_path(movie.id, attempt.id)
+        render = renderer or render_movie
+        logger.info(
+            "rendering job_id=%s attempt_id=%s clips=%d -> %s",
+            job.id, attempt.id, len(selected), destination,
+        )
+        hold_seconds = (
+            movie.transition_hold_seconds
+            if movie.transition_hold_seconds is not None
+            else settings.render_sting_hold_seconds
+        )
+        options = RenderOptions(
+            movie_id=movie.id,
+            fps=settings.render_fps,
+            width=settings.render_width,
+            height=settings.render_height,
+            hold_frames=max(0, round(hold_seconds * settings.render_fps)),
+            blend_frames=settings.render_blend_frames,
+            family=movie.transition_style or settings.render_transition_style,
+            wordmark=movie.title,
+            font_path=settings.render_font_path,
+            font_size=settings.render_font_size,
+            logo_max_width=settings.render_logo_max_width,
+            blue=settings.render_brand_blue,
+            orange=settings.render_brand_orange,
+        )
+        media = render(
+            [
+                ClipSpec(
+                    source=Path(clip.storage_path),
+                    name=ParsedClipName(
+                        clip.team, clip.player, clip.tier, clip.extension or "mp4"
+                    ),
+                    logo_path=resolve_logo_path(db, movie.user_id, clip.team),
+                )
+                for _, clip, _ in selected
+            ],
+            destination,
+            options,
+        )
+
+        for _, _, result in selected:
             result.status = "accepted"
             result.reason_summary = "Rendered successfully."
-        attempt.provider_request_id = request_id
         attempt.provider_response_json = media
         attempt.status = "succeeded"
         attempt.completed_at = datetime.now(timezone.utc)
@@ -132,17 +170,20 @@ def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=
         job.failed_clip_count = 0
         video = Video(
             movie_id=movie.id, source_attempt_id=attempt.id,
-            storage_path=str(output_path(movie.id, attempt.id)), status="succeeded",
+            storage_path=str(destination), status="succeeded",
             generation_notes="FFmpeg normalized, overlaid, and concatenated output.",
-            provider_asset_id=request_id, duration_seconds=media.get("duration"), metadata_json=media,
+            duration_seconds=media.get("duration"), metadata_json=media,
         )
-        # Compatibility fake renders have no file; production renders do.
-        if request_id is not None:
-            video.storage_path = str(output_path(movie.id, attempt.id))
         db.add(video)
         db.flush()
         movie.latest_video_id = video.id
+        logger.info(
+            "render succeeded job_id=%s video_id=%s duration=%.3fs elapsed=%.1fs",
+            job.id, video.id, media.get("duration") or 0.0,
+            (datetime.now(timezone.utc) - started).total_seconds(),
+        )
     except RenderError as exc:
+        logger.warning("render failed job_id=%s stage=%s: %s", job.id, exc.stage, exc)
         for _, _, result in selected:
             result.status = "rejected"
             result.failure_stage = exc.stage
@@ -153,6 +194,7 @@ def process_next_job(db: Session, veo_client: VeoClient | None = None, renderer=
         _set_failure(job, attempt, str(exc), exc.stage)
         movie.status = "failed"
     except Exception as exc:
+        logger.exception("unexpected worker error job_id=%s", job.id)
         _set_failure(job, attempt, str(exc), "worker")
         movie.status = "failed"
 

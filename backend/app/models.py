@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -41,6 +41,7 @@ class User(TimestampMixin, Base):
     movies: Mapped[list["Movie"]] = relationship(back_populates="user")
     clips: Mapped[list["Clip"]] = relationship(back_populates="user")
     oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(back_populates="user")
+    logos: Mapped[list["Logo"]] = relationship(back_populates="user")
 
 
 class OAuthAccount(TimestampMixin, Base):
@@ -84,6 +85,24 @@ class Clip(TimestampMixin, Base):
     user: Mapped[User] = relationship(back_populates="clips")
 
 
+class Logo(TimestampMixin, Base):
+    """A team logo, matched to clips by the team token in their filename."""
+
+    __tablename__ = "logos"
+    __table_args__ = (
+        UniqueConstraint("user_id", "team_normalized", name="uq_logos_user_team"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_value)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    team: Mapped[str] = mapped_column(String(255))
+    team_normalized: Mapped[str] = mapped_column(String(255), index=True)
+    original_name: Mapped[str] = mapped_column(String(255))
+    storage_path: Mapped[str] = mapped_column(Text)
+
+    user: Mapped[User] = relationship(back_populates="logos")
+
+
 class Movie(TimestampMixin, Base):
     __tablename__ = "movies"
 
@@ -94,6 +113,8 @@ class Movie(TimestampMixin, Base):
     latest_video_id: Mapped[str | None] = mapped_column(
         ForeignKey("videos.id"), nullable=True
     )
+    transition_style: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    transition_hold_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="movies")
     slots: Mapped[list["MovieSlot"]] = relationship(
@@ -144,7 +165,7 @@ class RenderJobAttempt(TimestampMixin, Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_value)
     render_job_id: Mapped[str] = mapped_column(ForeignKey("render_jobs.id"), index=True)
     attempt_number: Mapped[int] = mapped_column(Integer, default=1)
-    provider: Mapped[str] = mapped_column(String(32), default="veo")
+    provider: Mapped[str] = mapped_column(String(32), default="ffmpeg")
     provider_request_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="queued")
     failure_stage: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -181,7 +202,9 @@ class RenderJobClipResult(TimestampMixin, Base):
     movie_slot_id: Mapped[str | None] = mapped_column(
         ForeignKey("movie_slots.id"), nullable=True
     )
-    clip_id: Mapped[str] = mapped_column(ForeignKey("clips.id"), index=True)
+    clip_id: Mapped[str | None] = mapped_column(
+        ForeignKey("clips.id"), nullable=True, index=True
+    )
     clip_order_index: Mapped[int] = mapped_column(Integer)
     submitted_clip_path: Mapped[str] = mapped_column(Text)
     provider_clip_reference: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -198,7 +221,7 @@ class RenderJobClipResult(TimestampMixin, Base):
     provider_response_json: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     attempt: Mapped[RenderJobAttempt] = relationship(back_populates="clip_results")
-    clip: Mapped[Clip] = relationship()
+    clip: Mapped[Clip | None] = relationship()
 
 
 class Video(TimestampMixin, Base):

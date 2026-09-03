@@ -23,8 +23,6 @@ class Settings(BaseSettings):
     oauth_state_cookie_name: str = "clip_create_oauth_state"
     oauth_next_cookie_name: str = "clip_create_oauth_next"
     storage_root: Path = Path("storage")
-    veo_provider: str = "veo"
-    veo_dry_run: bool = True
     secure_cookies: bool = False
     admin_discord_ids: list[str] = Field(default_factory=list)
     auth_enabled: bool = True
@@ -35,6 +33,49 @@ class Settings(BaseSettings):
     max_clip_size_bytes: int = 524288000
     max_clip_duration_seconds: float = 15.6
     supported_clip_extensions: str = "mp4,mov,webm,m4v,avi,mkv"
+
+    # Render geometry and timing. Frames are the unit of truth: xfade snaps
+    # offsets to frame boundaries while acrossfade is sample-exact, so planning
+    # in floating-point seconds drifts audio from video at every transition.
+    # 48000 / 30 == 1600 exactly, so a frame count maps to a whole sample count.
+    render_fps: int = 30
+    render_width: int = 1920
+    render_height: int = 1080
+    render_sting_hold_seconds: float = 0.6
+    render_sting_blend_seconds: float = 0.3
+    render_transition_style: str = "sweep"
+
+    # Brand
+    render_brand_blue: str = "#0B5CD5"
+    render_brand_orange: str = "#FF7A18"
+    render_font_path: Path | None = None
+    render_font_size: int = 42
+    render_logo_max_width: int = 260
+    max_logo_size_bytes: int = 5242880
+
+    # Encoding
+    render_intermediate_crf: int = 16
+    render_intermediate_preset: str = "veryfast"
+    render_final_crf: int = 20
+    render_final_preset: str = "medium"
+    render_audio_bitrate: str = "192k"
+
+    # Safety limits
+    render_max_graph_inputs: int = 24
+    render_ffmpeg_timeout_seconds: int = 1800
+    render_ffprobe_timeout_seconds: int = 60
+
+    @property
+    def render_hold_frames(self) -> int:
+        return max(0, round(self.render_sting_hold_seconds * self.render_fps))
+
+    @property
+    def render_blend_frames(self) -> int:
+        return max(1, round(self.render_sting_blend_seconds * self.render_fps))
+
+    @property
+    def render_samples_per_frame(self) -> int:
+        return 48000 // self.render_fps
 
     @property
     def supported_extensions(self) -> set[str]:
