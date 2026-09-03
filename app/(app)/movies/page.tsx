@@ -1,0 +1,84 @@
+import Link from "next/link";
+import { PageHeader } from "@/app/components/page-header";
+import { StatusBadge } from "@/app/components/status-badge";
+import { SummaryCard } from "@/app/components/summary-card";
+import { getMovies } from "@/app/lib/api";
+
+export default async function MoviesPage() {
+  const movies = await getMovies();
+  const activeMovies = movies.filter((movie) => movie.status !== "archived");
+  const videosReady = movies.filter((movie) => movie.latestVideo).length;
+
+  return (
+    <main className="page-shell page-grid">
+      <PageHeader
+        actions={
+          <Link className="button button-primary" href="/movies/new">
+            New Movie
+          </Link>
+        }
+        description="Track current clip assemblies, render status, and the latest generated output for every movie."
+        eyebrow="Movies"
+        title="Clip Assembly Queue"
+      />
+
+      <section className="stats-grid">
+        <SummaryCard
+          detail="Movies currently managed by the authenticated user."
+          label="Total Movies"
+          value={movies.length}
+        />
+        <SummaryCard
+          detail="Movies that still have active editing or render work."
+          label="Active Movies"
+          value={activeMovies.length}
+        />
+        <SummaryCard
+          detail="Movies with at least one rendered output stored."
+          label="Videos Ready"
+          value={videosReady}
+        />
+      </section>
+
+      <section className="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Movie</th>
+              <th>Status</th>
+              <th>Slots</th>
+              <th>Latest Output</th>
+              <th>Updated</th>
+            </tr>
+          </thead>
+          <tbody>
+            {movies.map((movie) => (
+              <tr key={movie.id}>
+                <td>
+                  <Link href={`/movies/${movie.id}/edit`}>
+                    <strong>{movie.title}</strong>
+                  </Link>
+                </td>
+                <td>
+                  <StatusBadge value={movie.status} />
+                </td>
+                <td>{movie.slotCount}</td>
+                <td>
+                  {movie.latestVideo?.downloadUrl ? (
+                    <div className="stack-sm">
+                      <video controls preload="metadata" src={movie.latestVideo.downloadUrl} />
+                      <a href={movie.latestVideo.downloadUrl} target="_blank" rel="noreferrer">
+                        Download MP4
+                      </a>
+                    </div>
+                  ) : "No render yet"}
+                </td>
+                <td>{new Date(movie.updatedAt).toLocaleString()}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </main>
+  );
+}
