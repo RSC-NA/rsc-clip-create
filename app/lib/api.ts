@@ -6,6 +6,8 @@ import type {
   AdminUser,
   AdminVideo,
   AppSession,
+  ClientConfig,
+  Logo,
   MovieDetail,
   MovieSummary,
   RenderJob,
@@ -79,6 +81,14 @@ export async function getMovie(movieId: string) {
 
 export async function getJob(jobId: string) {
   return request<RenderJob>(`/jobs/${jobId}`);
+}
+
+export async function getLogos() {
+  return request<Logo[]>("/logos");
+}
+
+export async function getClientConfig() {
+  return request<ClientConfig>("/config");
 }
 
 export async function getAdminDashboard() {

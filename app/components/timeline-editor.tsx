@@ -1,8 +1,14 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import type { ClipSummary, MovieSlot, RenderJob } from "@/app/lib/types";
+import type {
+  ClipSummary,
+  MovieDetail,
+  MovieSlot,
+  RenderJob,
+} from "@/app/lib/types";
 import { browserApiPath } from "@/app/lib/browser-api";
 import { StatusBadge } from "@/app/components/status-badge";
 
@@ -24,16 +30,33 @@ function normalizeSlots(slots: EditableSlot[]) {
   }));
 }
 
+const STYLE_BLURB: Record<string, string> = {
+  sweep: "Wipes and slides. The brand card travels the way the cut does.",
+  slice: "Hard-edged slices and diagonals.",
+  dissolve: "Soft dissolves, pixelisation and grain.",
+  pop: "Circles, zooms and squeezes.",
+  storm: "Wind and blur. The busiest of the set.",
+  classic: "A plain crossfade through the brand card.",
+};
+
 export function TimelineEditor({
   movieId,
   initialSlots,
   availableClips,
   initialJob,
+  transitionStyle,
+  transitionHoldSeconds,
+  transitionStyles,
+  logoTeams,
 }: {
   movieId: string;
   initialSlots: MovieSlot[];
   availableClips: ClipSummary[];
   initialJob: RenderJob | null;
+  transitionStyle: string;
+  transitionHoldSeconds: number;
+  transitionStyles: string[];
+  logoTeams: string[];
 }) {
   const router = useRouter();
   const [slots, setSlots] = useState<EditableSlot[]>(
@@ -41,18 +64,28 @@ export function TimelineEditor({
       ? normalizeSlots(initialSlots)
       : Array.from({ length: 5 }, (_, index) => createEmptySlot(index)),
   );
+  const [style, setStyle] = useState(transitionStyle);
+  const [hold, setHold] = useState(transitionHoldSeconds);
   const [job, setJob] = useState(initialJob);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  // Closed over as primitives, not the job object: setJob inside the interval
+  // replaces `job` on every successful poll, so depending on the object would
+  // tear the interval down and recreate it every 1.5s.
+  const jobId = job?.id;
+  const jobStatus = job?.status;
+
   useEffect(() => {
-    if (!job || !["queued", "running"].includes(job.status)) return;
+    if (!jobId || !["queued", "running"].includes(jobStatus ?? "")) return;
     const timer = window.setInterval(async () => {
-      const response = await fetch(browserApiPath(`/jobs/${job.id}`), { cache: "no-store" });
+      const response = await fetch(browserApiPath(`/jobs/${jobId}`), {
+        cache: "no-store",
+      });
       if (response.ok) setJob((await response.json()) as RenderJob);
     }, 1500);
     return () => window.clearInterval(timer);
-  }, [job]);
+  }, [jobId, jobStatus]);
 
   function updateSlot(slotId: string, patch: Partial<EditableSlot>) {
     setSlots((current) =>
@@ -101,6 +134,8 @@ export function TimelineEditor({
             "content-type": "application/json",
           },
           body: JSON.stringify({
+            transition_style: style,
+            transition_hold_seconds: hold,
             slots: normalizeSlots(slots).map((slot) => ({
               id: slot.id,
               sort_index: slot.sortIndex,
@@ -114,6 +149,12 @@ export function TimelineEditor({
           throw new Error(await response.text());
         }
 
+        // The server mints its own slot ids. Without adopting them, this
+        // component keeps its local crypto.randomUUID() ids forever --
+        // router.refresh() re-renders the Server Component but does not remount
+        // this one -- and the next save creates duplicate slots.
+        const saved = (await response.json()) as MovieDetail;
+        setSlots(normalizeSlots(saved.slots));
         router.refresh();
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Failed to save timeline.");
@@ -141,6 +182,8 @@ export function TimelineEditor({
       }
     });
   }
+
+  const filledSlots = slots.filter((slot) => slot.clipId).length;
 
   return (
     <div className="page-grid">
@@ -237,11 +280,27 @@ export function TimelineEditor({
                 </div>
                 {slot.clipId ? (() => {
                   const clip = availableClips.find((item) => item.id === slot.clipId);
-                  return clip ? (
-                    <p className="text-soft">
-                      Label: {clip.team ?? "?"} / {clip.player ?? "?"} / {clip.tier ?? "?"}
-                    </p>
-                  ) : null;
+                  if (!clip) return null;
+                  const hasLogo =
+                    clip.team != null &&
+                    logoTeams.includes(clip.team.trim().toLowerCase());
+                  return (
+                    <div className="stack-sm">
+                      <p className="text-soft">
+                        Label: {clip.team ?? "?"} / {clip.player ?? "?"} /{" "}
+                        {clip.tier ?? "?"}
+                      </p>
+                      {hasLogo ? (
+                        <span className="badge" data-tone="success">
+                          {clip.team} logo
+                        </span>
+                      ) : (
+                        <Link className="text-soft" href="/logos">
+                          No logo for {clip.team ?? "this team"} - add one
+                        </Link>
+                      )}
+                    </div>
+                  );
                 })() : null}
 
                 <div className="field">
@@ -262,6 +321,53 @@ export function TimelineEditor({
       </section>
 
       <section className="panel stack-md">
+        <div className="stack-sm">
+          <span className="eyebrow">Transitions</span>
+          <p className="text-soft">
+            Clips are joined by a blue and orange brand card. Direction and
+            colour vary at every cut, seeded from this movie, so the sequence is
+            different each time but identical on a re-render.
+          </p>
+        </div>
+
+        <div className="form-grid md:grid-cols-2">
+          <div className="field">
+            <label htmlFor="transition-style">Style</label>
+            <select
+              id="transition-style"
+              onChange={(event) => setStyle(event.target.value)}
+              value={style}
+            >
+              {transitionStyles.map((option) => (
+                <option key={option} value={option}>
+                  {option}
+                </option>
+              ))}
+            </select>
+            <p className="text-soft">{STYLE_BLURB[style] ?? ""}</p>
+          </div>
+
+          <div className="field">
+            <label htmlFor="transition-hold">Hold (seconds)</label>
+            <input
+              id="transition-hold"
+              max={3}
+              min={0}
+              onChange={(event) => setHold(Number(event.target.value))}
+              step={0.1}
+              type="number"
+              value={hold}
+            />
+            <p className="text-soft">
+              {hold === 0
+                ? "Zero holds means hard cuts with no brand card."
+                : `Adds ${(hold * Math.max(0, filledSlots - 1)).toFixed(1)}s across ${Math.max(0, filledSlots - 1)} transition${filledSlots === 2 ? "" : "s"}.`}
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel stack-md">
         <div className="row-between">
           <div className="stack-sm">
             <span className="eyebrow">Render Job</span>
@@ -271,7 +377,7 @@ export function TimelineEditor({
           </div>
           <button
             className="button button-primary"
-            disabled={isPending || slots.filter((slot) => slot.clipId).length < 2}
+            disabled={isPending || filledSlots < 2}
             onClick={queueRender}
             type="button"
           >

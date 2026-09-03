@@ -150,6 +150,9 @@ class RenderJob(TimestampMixin, Base):
     latest_attempt_id: Mapped[str | None] = mapped_column(
         ForeignKey("render_job_attempts.id"), nullable=True
     )
+    heartbeat_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
 
     movie: Mapped[Movie] = relationship(back_populates="render_jobs")
     attempts: Mapped[list["RenderJobAttempt"]] = relationship(

@@ -30,7 +30,7 @@ export default async function LoginPage() {
           <article className="panel muted-panel">
             <span className="mono-label">Admin Access</span>
             <p className="text-soft">
-              Review users, inspect failed Veo attempts, and diagnose clip-level
+              Review users, inspect failed render attempts, and diagnose clip-level
               errors across the system.
             </p>
           </article>

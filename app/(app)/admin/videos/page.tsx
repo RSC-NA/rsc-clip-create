@@ -10,7 +10,7 @@ export default async function AdminVideosPage() {
   return (
     <main className="page-shell page-grid">
       <PageHeader
-        description="Inspect every generated output, its owner, and the latest Veo attempt state that produced or blocked it."
+        description="Inspect every generated output, its owner, and the latest render attempt state that produced or blocked it."
         eyebrow="Administrator"
         title="Video Inventory"
       />

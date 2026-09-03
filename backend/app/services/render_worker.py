@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import select, update
@@ -50,7 +50,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
     claimed = db.execute(
         update(RenderJob)
         .where(RenderJob.id == job.id, RenderJob.status == "queued")
-        .values(status="running")
+        .values(status="running", heartbeat_at=datetime.now(timezone.utc))
     )
     if claimed.rowcount != 1:
         # Another worker won the race for this job.
@@ -200,3 +200,32 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
 
     db.commit()
     return job
+
+
+def requeue_stale_jobs(db: Session, *, timeout_seconds: int | None = None) -> int:
+    """Return jobs abandoned by a crashed worker to the queue.
+
+    A worker that dies mid-render leaves its job in ``running`` forever, and the
+    editor polls it indefinitely. Anything still running well past the ffmpeg
+    timeout cannot be alive.
+    """
+    timeout = timeout_seconds or (settings.render_ffmpeg_timeout_seconds * 2)
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=timeout)
+    stale = db.scalars(
+        select(RenderJob).where(RenderJob.status == "running")
+    ).all()
+
+    requeued = 0
+    for job in stale:
+        beat = job.heartbeat_at
+        if beat is not None and beat.tzinfo is None:
+            beat = beat.replace(tzinfo=timezone.utc)
+        if beat is not None and beat > cutoff:
+            continue
+        job.status = "queued"
+        job.final_status_reason = "Requeued after the previous worker stopped responding."
+        requeued += 1
+        logger.warning("requeued stale render job job_id=%s", job.id)
+    if requeued:
+        db.commit()
+    return requeued

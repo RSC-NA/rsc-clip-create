@@ -44,11 +44,32 @@ export type MovieSummary = {
   updatedAt: string;
   slotCount: number;
   latestVideo: VideoSummary | null;
+  transitionStyle: string;
+  transitionHoldSeconds: number;
 };
 
 export type MovieDetail = MovieSummary & {
   clips: ClipSummary[];
   slots: MovieSlot[];
+  transitionStyles: string[];
+};
+
+export type Logo = {
+  id: string;
+  team: string;
+  originalName: string;
+  storagePath: string;
+  imageUrl: string;
+  createdAt: string;
+};
+
+export type ClientConfig = {
+  filenamePattern: string;
+  supportedExtensions: string[];
+  minClipCount: number;
+  maxClipCount: number;
+  maxClipSizeBytes: number;
+  maxClipDurationSeconds: number;
 };
 
 export type RenderJobClipResult = {

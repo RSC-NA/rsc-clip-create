@@ -103,30 +103,59 @@ npx eslint
 
 All three are green as of this writing. There is no `npm test` script and no CI.
 
-## Known issues — check before "fixing" something that looks intentional
+## Render pipeline (read before touching renderer.py)
 
-These are real and unfixed. Don't be surprised by them, and don't paper over them:
+Two passes, in `backend/app/services/`:
 
-- **Almost nothing is committed to git.** `git ls-files` returns only the Create-Next-App
-  scaffold. `backend/`, `app/(app)/`, `app/components/`, `app/lib/`, `app/actions/`,
-  `scripts/`, and `docker-compose.yml` are all untracked. Be extremely careful with any
-  destructive git operation in this repo.
-- `.gitignore`'s `.env*` also ignores `.env.example` and `backend/.env.example`, so the
-  files the README's setup steps tell you to copy cannot be committed.
-- `clip_create.db` (a stale SQLite artifact; the app is on MySQL) and `.venv/` are not
-  ignored and would be swept into a `git add .`.
-- `backend/app/services/veo.py` is vestigial. `process_next_job` branches on a
-  `veo_client` argument that only tests pass; production always uses the FFmpeg renderer.
-  The `if request_id is not None: video.storage_path = ...` block is a no-op that
-  reassigns the value already set in the constructor, and its comment describes the
-  opposite of what the code does.
-- The worker hardcodes `len(selected) < 2` instead of `settings.min_clip_count`.
-- The UI still says "Veo" in three places while the renderer is FFmpeg.
-- `TimelineEditor` initializes `useState` from props and never re-syncs after
-  `router.refresh()`, so slot ids go stale after a save. It also always receives
-  `initialJob={null}` — there is no endpoint to list a movie's existing jobs.
-- No DELETE endpoints exist for movies, clips, or videos.
-- Zero `logging` calls in the entire backend.
+1. `renderer.normalize_clip` -- one ffmpeg call per clip: scale/pad to 1920x1080 at 30fps,
+   always emit a stereo 48kHz track, burn the label from `brand.create_label_image`.
+2. `renderer.build_chain_command` -- one filter graph joining the normalized clips with
+   `xfade`, passing through a generated brand sting at each boundary.
 
-Full analysis, including severity and suggested fixes, is in the review that produced this
-file — re-derive rather than assume if it matters.
+**Timing is planned in integer frames, never seconds.** `xfade` snaps offsets to frame
+boundaries while `acrossfade` is sample-exact, so a plan in floating-point seconds drifts
+audio from video at every boundary and accumulates. 30fps/48kHz means one frame is exactly
+1600 samples. If you touch the arithmetic, `backend/tests/test_renderer_planning.py`
+asserts the offsets against hand-worked numbers -- run it before anything else.
+
+The running offsets, where `L_i` is the accumulated length after clip `i`:
+
+```
+O_sting(i)  = L_i - b        O_clip(i+1) = L_i + d        L_(i+1) = L_i + d + N_(i+1)
+```
+
+`offset` is relative to the *accumulated* first input, so it must be recomputed after every
+join. Total = `sum(clip frames) + (n-1) x hold`.
+
+`build_chain_command` is a pure function returning `list[str]` -- keep it that way. The
+graph string is the part most likely to be subtly wrong and this is what makes it
+assertable without running ffmpeg.
+
+## Brand decisions (`services/brand.py`)
+
+Pure Pillow, no ffmpeg, no DB. Style/direction/colour are seeded by
+`sha256(f"{movie_id}:{index}:{salt}")`. **Never `random.seed()`** (global state in a
+long-lived worker) and **never `hash()`** (randomized per process by PYTHONHASHSEED --
+there is a test that catches a regression to it). A sting is left by the `MIRROR` of the
+transition that entered it; lead colour strictly alternates on boundary parity rather than
+hashing, because hashing clumps three blues in a row often enough to look like a bug.
+
+Logos are matched by `normalize_team()` against the `team` token from the filename. A
+missing, unmatched, or unreadable logo must always degrade to the text-only label -- it
+must never fail a render.
+
+## Known issues -- check before "fixing" something that looks intentional
+
+- Admin endpoints have no pagination and issue per-row queries.
+- Schema changes go through `migrations.ensure_media_columns`, a hand-rolled idempotent
+  `ALTER TABLE ADD COLUMN` helper, not Alembic. New tables come from `create_all`.
+- No DELETE endpoints for movies, clips, or videos (logos excepted).
+- Removing an ID from `ADMIN_DISCORD_IDS` does not revoke an existing admin
+  (`upsert_discord_user` uses `is_admin or ...`).
+- Expired `SessionRecord` rows are never reaped; `SameSite=lax` is the only CSRF defence.
+- Both client components render raw FastAPI error bodies into the UI.
+- The join pass opens `2n-1` inputs at once, so movies above `render_max_graph_inputs`
+  (24) are rejected with a clear error rather than rendered in chunks.
+- `_video_summary().downloadUrl` uses `fastapi_public_url` directly rather than the
+  `/api/backend` rewrite, so playback cookies will break once the frontend and backend are
+  on different domains.

@@ -16,6 +16,7 @@ COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
         "extension": "VARCHAR(16)",
     },
     "videos": {"duration_seconds": "FLOAT", "metadata_json": "JSON"},
+    "render_jobs": {"heartbeat_at": "DATETIME"},
     "movies": {
         "transition_style": "VARCHAR(32)",
         "transition_hold_seconds": "FLOAT",

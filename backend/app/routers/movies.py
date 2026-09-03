@@ -297,18 +297,29 @@ def queue_render(
     if any(clip is None or not clip.team or not clip.player or not clip.tier for clip in clips):
         raise HTTPException(status_code=400, detail="Every selected clip must have valid filename metadata.")
 
-    job = RenderJob(
-        movie_id=movie.id,
-        status="queued",
-        final_status_reason="Waiting for worker pickup.",
-        accepted_clip_count=0,
-        failed_clip_count=0,
+    # Reuse the movie's existing job so retries accumulate as attempts, which
+    # is what the job -> attempt -> clip-result hierarchy exists to record.
+    job = db.scalar(
+        select(RenderJob)
+        .where(RenderJob.movie_id == movie.id)
+        .options(selectinload(RenderJob.attempts))
+        .order_by(RenderJob.created_at.desc())
     )
-    db.add(job)
+    if job is None:
+        job = RenderJob(movie_id=movie.id)
+        db.add(job)
+    job.status = "queued"
+    job.final_status_reason = "Waiting for worker pickup."
+    job.accepted_clip_count = 0
+    job.failed_clip_count = 0
+    job.has_clip_level_failures = False
+    job.heartbeat_at = None
     db.flush()
+
+    next_number = max((a.attempt_number for a in job.attempts), default=0) + 1
     attempt = RenderJobAttempt(
         render_job_id=job.id,
-        attempt_number=1,
+        attempt_number=next_number,
         status="queued",
         provider="ffmpeg",
         request_payload_json={
@@ -325,5 +336,4 @@ def queue_render(
     db.commit()
     db.refresh(job)
     db.refresh(attempt)
-    job.attempts = [attempt]
     return _job_response(job)

@@ -1,7 +1,10 @@
 import { CreateMovieForm } from "@/app/components/create-movie-form";
 import { PageHeader } from "@/app/components/page-header";
+import { getClientConfig } from "@/app/lib/api";
 
-export default function NewMoviePage() {
+export default async function NewMoviePage() {
+  const config = await getClientConfig();
+
   return (
     <main className="page-shell page-grid">
       <PageHeader
@@ -11,7 +14,7 @@ export default function NewMoviePage() {
       />
 
       <div className="split">
-        <CreateMovieForm />
+        <CreateMovieForm config={config} />
 
         <section className="panel stack-md">
           <div className="stack-sm">
@@ -34,7 +37,7 @@ export default function NewMoviePage() {
               </p>
             </article>
             <article>
-              <strong>3. Queue Veo</strong>
+              <strong>3. Render</strong>
               <p className="text-soft">
                 FFmpeg normalizes, labels, concatenates, and stores a downloadable MP4.
               </p>

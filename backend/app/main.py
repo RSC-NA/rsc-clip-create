@@ -4,10 +4,11 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.config import get_settings
-from backend.app.database import Base, engine
+from backend.app.database import Base, SessionLocal, engine
 from backend.app.logging_config import configure_logging
 from backend.app.migrations import ensure_media_columns, ensure_nullable_columns
 from backend.app.routers import admin, auth, clips, config, jobs, logos, movies, videos
+from backend.app.services.render_worker import requeue_stale_jobs
 from backend.app.storage import ensure_storage_dirs
 
 
@@ -21,6 +22,8 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     ensure_media_columns(engine)
     ensure_nullable_columns(engine)
+    with SessionLocal() as db:
+        requeue_stale_jobs(db)
     yield
 
 
