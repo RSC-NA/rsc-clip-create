@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from backend.app.config import get_settings
-from backend.app.filename_parser import FILENAME_RE
+from backend.app.filename_parser import CLIENT_FILENAME_PATTERN
 from backend.app.schemas import ClientConfigResponse
 
 
@@ -19,7 +19,7 @@ def client_config():
     which had drifted from the server's and accepted names the API rejected.
     """
     return ClientConfigResponse(
-        filenamePattern=FILENAME_RE.pattern,
+        filenamePattern=CLIENT_FILENAME_PATTERN,
         supportedExtensions=sorted(settings.supported_extensions),
         minClipCount=settings.min_clip_count,
         maxClipCount=settings.max_clip_count,

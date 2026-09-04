@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -8,7 +8,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from backend.app.database import get_db
 from backend.app.config import get_settings
 from backend.app.deps import get_current_user
-from backend.app.models import Clip, Movie, MovieSlot, RenderJob, RenderJobAttempt, User, Video
+from backend.app.models import (
+    Clip,
+    Movie,
+    MovieSlot,
+    RenderJob,
+    RenderJobAttempt,
+    RenderJobClipResult,
+    User,
+    Video,
+)
 from backend.app.services.brand import DEFAULT_FAMILY, TRANSITION_FAMILIES
 from backend.app.schemas import (
     ClipResponse,
@@ -248,16 +257,34 @@ def update_timeline(
             assigned_clip_ids.add(slot_payload.clip_id)
         slot = existing_by_id.get(slot_payload.id or "")
         if slot is None:
-            slot = MovieSlot(movie_id=movie.id)
+            # Populate before flushing: sort_index is NOT NULL, so flushing a
+            # bare MovieSlot and assigning afterwards fails the constraint and
+            # turns every newly added slot into a 500.
+            slot = MovieSlot(
+                movie_id=movie.id,
+                sort_index=slot_payload.sort_index,
+                clip_id=slot_payload.clip_id,
+                overlay_text=slot_payload.overlay_text,
+            )
             db.add(slot)
             db.flush()
-        slot.sort_index = slot_payload.sort_index
-        slot.clip_id = slot_payload.clip_id
-        slot.overlay_text = slot_payload.overlay_text
+        else:
+            slot.sort_index = slot_payload.sort_index
+            slot.clip_id = slot_payload.clip_id
+            slot.overlay_text = slot_payload.overlay_text
         retained_ids.add(slot.id)
 
-    for slot in list(movie.slots):
-        if slot.id not in retained_ids:
+    removed = [slot for slot in movie.slots if slot.id not in retained_ids]
+    if removed:
+        # Detach the render diagnostics first. RenderJobClipResult.movie_slot_id
+        # has no relationship back to MovieSlot, so SQLAlchemy will not null it
+        # for us and the DELETE is rejected on any movie that has been rendered.
+        db.execute(
+            update(RenderJobClipResult)
+            .where(RenderJobClipResult.movie_slot_id.in_([slot.id for slot in removed]))
+            .values(movie_slot_id=None)
+        )
+        for slot in removed:
             db.delete(slot)
 
     db.commit()

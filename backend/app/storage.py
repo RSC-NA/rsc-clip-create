@@ -44,7 +44,15 @@ def save_upload(
     ever runs.
     """
     ensure_storage_dirs()
-    destination = settings.storage_root / folder / Path(destination_name).name
+    # Basename the caller's composed name, then guard the result. Taking .name
+    # of "<uuid>-sub/Falcons-Ace-Gold.mp4" yields "Falcons-Ace-Gold.mp4" --
+    # the uuid prefix is discarded and every user writes to the same path.
+    # Callers must basename the untrusted part before composing (see
+    # safe_upload_name); this is the backstop.
+    safe_name = Path(destination_name).name
+    if not safe_name or safe_name in {".", ".."}:
+        raise ValueError(f"Unsafe upload name: {destination_name!r}")
+    destination = settings.storage_root / folder / safe_name
     written = 0
     try:
         with destination.open("wb") as output:
@@ -60,6 +68,16 @@ def save_upload(
         destination.unlink(missing_ok=True)
         raise
     return destination
+
+
+def safe_upload_name(prefix: str, filename: str | None, fallback: str = "upload") -> str:
+    """Compose a storage name whose uniqueness prefix cannot be stripped.
+
+    ``Path(...).name`` is applied to the untrusted half *before* joining, so a
+    filename containing a separator cannot collapse the prefix away.
+    """
+    base = Path(filename or "").name.strip() or fallback
+    return f"{prefix}-{base}"
 
 
 def output_path(movie_id: str, attempt_id: str) -> Path:

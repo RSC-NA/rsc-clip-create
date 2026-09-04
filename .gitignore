@@ -41,6 +41,9 @@ __pycache__/
 .pytest_cache/
 
 # local artifacts
+backend/tests/fixtures/samples/*
+!backend/tests/fixtures/samples/README.md
+test-output/
 clip_create.db
 storage/
 

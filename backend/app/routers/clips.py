@@ -13,7 +13,7 @@ from backend.app.config import get_settings
 from backend.app.filename_parser import parse_clip_filename
 from backend.app.models import Clip, Movie, MovieSlot, User
 from backend.app.schemas import ClipResponse
-from backend.app.storage import ProbeError, UploadTooLarge, probe_media, save_upload
+from backend.app.storage import ProbeError, UploadTooLarge, probe_media, safe_upload_name, save_upload
 
 
 router = APIRouter(prefix="/clips", tags=["clips"])
@@ -77,7 +77,7 @@ def upload_clips(
             # file has already been written to disk.
             destination = save_upload(
                 file,
-                f"{uuid.uuid4()}-{file.filename}",
+                safe_upload_name(str(uuid.uuid4()), file.filename, "clip.mp4"),
                 max_bytes=settings.max_clip_size_bytes,
             )
         except UploadTooLarge:

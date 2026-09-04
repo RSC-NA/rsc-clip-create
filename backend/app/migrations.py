@@ -28,6 +28,12 @@ COLUMN_RELAXATIONS: dict[str, dict[str, str]] = {
     "render_job_clip_results": {"clip_id": "VARCHAR(36)"},
 }
 
+# Foreign keys whose ON DELETE behaviour changed after the initial schema.
+FK_REDEFINITIONS: list[tuple[str, str, str, str, str]] = [
+    # (table, constraint-ish column, referenced table, referenced column, on_delete)
+    ("render_job_clip_results", "movie_slot_id", "movie_slots", "id", "SET NULL"),
+]
+
 
 def ensure_media_columns(engine: Engine) -> None:
     inspector = inspect(engine)
@@ -66,3 +72,37 @@ def ensure_nullable_columns(engine: Engine) -> None:
                     connection.execute(
                         text(f"ALTER TABLE {table} MODIFY {column} {sql_type} NULL")
                     )
+
+
+def ensure_foreign_key_actions(engine: Engine) -> None:
+    """Re-point foreign keys whose ON DELETE action changed.
+
+    MySQL only; SQLite builds its schema fresh from the models in tests.
+    Dropping and recreating a constraint is not idempotent by name, so the
+    existing constraint is looked up first.
+    """
+    if engine.dialect.name != "mysql":
+        return
+
+    inspector = inspect(engine)
+    with engine.begin() as connection:
+        for table, column, ref_table, ref_column, on_delete in FK_REDEFINITIONS:
+            if not inspector.has_table(table):
+                continue
+            for fk in inspector.get_foreign_keys(table):
+                if fk.get("constrained_columns") != [column]:
+                    continue
+                if (fk.get("options") or {}).get("ondelete", "").upper() == on_delete:
+                    break
+                name = fk.get("name")
+                if name:
+                    logger.info("re-pointing FK %s.%s -> ON DELETE %s", table, column, on_delete)
+                    connection.execute(text(f"ALTER TABLE {table} DROP FOREIGN KEY {name}"))
+                    connection.execute(
+                        text(
+                            f"ALTER TABLE {table} ADD CONSTRAINT {name} "
+                            f"FOREIGN KEY ({column}) REFERENCES {ref_table}({ref_column}) "
+                            f"ON DELETE {on_delete}"
+                        )
+                    )
+                break

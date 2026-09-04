@@ -202,8 +202,11 @@ class RenderJobClipResult(TimestampMixin, Base):
     render_job_attempt_id: Mapped[str] = mapped_column(
         ForeignKey("render_job_attempts.id"), index=True
     )
+    # SET NULL, not RESTRICT: a clip result is a render diagnostic and must
+    # outlive the timeline edit that removes its slot. Without this, removing a
+    # clip from a movie that has been rendered once raises IntegrityError.
     movie_slot_id: Mapped[str | None] = mapped_column(
-        ForeignKey("movie_slots.id"), nullable=True
+        ForeignKey("movie_slots.id", ondelete="SET NULL"), nullable=True
     )
     clip_id: Mapped[str | None] = mapped_column(
         ForeignKey("clips.id"), nullable=True, index=True

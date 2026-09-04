@@ -14,7 +14,7 @@ from backend.app.deps import get_current_user
 from backend.app.filename_parser import normalize_team
 from backend.app.models import Logo, User
 from backend.app.schemas import LogoResponse
-from backend.app.storage import UploadTooLarge, save_upload
+from backend.app.storage import UploadTooLarge, safe_upload_name, save_upload
 
 
 logger = logging.getLogger(__name__)
@@ -62,7 +62,7 @@ def upload_logo(
     try:
         destination = save_upload(
             file,
-            f"{uuid.uuid4()}-{file.filename or 'logo.png'}",
+            safe_upload_name(str(uuid.uuid4()), file.filename, "logo.png"),
             folder="logos",
             max_bytes=settings.max_logo_size_bytes,
         )
