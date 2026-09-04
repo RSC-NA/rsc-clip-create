@@ -19,5 +19,81 @@ services:
     volumes:
       - mysql-data:/var/lib/mysql
 
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clip-create-api
+    container_name: clip-create-api
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://clip_create:clip_create@mysql:3306/clip_create
+      STORAGE_ROOT: /app/storage
+      # Browser-facing: the backend builds absolute download and logo URLs with
+      # this, so it must be reachable from the host, not from inside the network.
+      FASTAPI_PUBLIC_URL: ${FASTAPI_PUBLIC_URL:-http://localhost:8000}
+      FRONTEND_PUBLIC_URL: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID:-discord-client-id}
+      DISCORD_CLIENT_SECRET: ${DISCORD_CLIENT_SECRET:-discord-client-secret}
+      DISCORD_REDIRECT_URI: ${DISCORD_REDIRECT_URI:-http://localhost:8000/api/v1/auth/discord/callback}
+      ADMIN_DISCORD_IDS: ${ADMIN_DISCORD_IDS:-[]}
+      # Defaults to a shared local admin with no sign-in. Set AUTH_ENABLED=true
+      # and supply Discord credentials before exposing this anywhere.
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      AUTH_BYPASS_ADMIN: ${AUTH_BYPASS_ADMIN:-true}
+      SECURE_COOKIES: ${SECURE_COOKIES:-false}
+    ports:
+      - "8000:8000"
+    volumes:
+      - clip-storage:/app/storage
+
+  worker:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    image: clip-create-api
+    container_name: clip-create-worker
+    restart: unless-stopped
+    depends_on:
+      # Waits for the API rather than for MySQL: schema creation and the
+      # migrations run in the API's lifespan, and the worker queries those
+      # tables the moment it starts.
+      api:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql+pymysql://clip_create:clip_create@mysql:3306/clip_create
+      STORAGE_ROOT: /app/storage
+    command: ["python", "-m", "backend.app.worker"]
+    # The image's healthcheck curls the API port; the worker serves no HTTP.
+    healthcheck:
+      disable: true
+    volumes:
+      # The same volume as the API: the worker reads uploaded clips and writes
+      # renders back to where the API serves them from.
+      - clip-storage:/app/storage
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Baked into routes-manifest.json at build time; see next.config.ts.
+        BACKEND_ORIGIN: http://api:8000
+    image: clip-create-web
+    container_name: clip-create-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Read at runtime by app/lib/api.ts for server-side fetches.
+      FASTAPI_INTERNAL_URL: http://api:8000
+    ports:
+      - "3000:3000"
+
 volumes:
   mysql-data:
+  clip-storage:

@@ -13,6 +13,12 @@ Two apps in one repo, plus a third process:
 | FastAPI backend | `backend/app/main.py` | 8000 |
 | FFmpeg render worker | `backend/app/worker.py` | — (polls DB) |
 
+Everything also runs containerised: `docker compose up -d --build`, then
+`./scripts/docker-smoke.sh` to prove uploads, rendering and download work. The API and
+worker share one image (both need ffmpeg — the API probes uploads with ffprobe) and a
+`clip-storage` volume. `STORAGE_ROOT` must be absolute there, since the default relative
+path resolves against each container's working directory.
+
 MySQL 8.4 runs in Docker (`docker compose up -d mysql`). `./scripts/run-dev.sh` starts all
 four together and is the preferred way to run the app; it preflights ffmpeg, ffprobe, lsof,
 the venv, and both `.env` files, and it leaves MySQL running on Ctrl-C.
@@ -194,3 +200,14 @@ Each of these was a real bug; the pattern matters more than the instance.
   handlers, and note a clip is referenced from *two* tables, not one.
 - **`useState` seeded from props never re-syncs** after `router.refresh()`, which
   re-renders the Server Component without remounting the client one.
+- **`setpts` clears a filter link's frame rate.** ffmpeg 7's `xfade` rejects an input
+  reading `1/0`; ffmpeg 8 tolerates it. Every branch feeding `xfade` re-asserts `fps`
+  *after* `setpts`. Development is on 8.x and the container ships 7.x, so verify filter
+  changes against both.
+- **`rewrites()` is evaluated at `next build`**, not at runtime, and serialised into
+  `routes-manifest.json`. The backend origin is a `BACKEND_ORIGIN` build arg. A
+  `proxy.ts` would be runtime-configurable but buffers the request body (10MB default),
+  which breaks clip uploads.
+- **A module run as `python -m` reports `__name__` as `"__main__"`.** That logger sits
+  outside the configured `backend` tree and inherits root's WARNING level, which silently
+  dropped every worker INFO line. `logging_config` now configures `__main__` explicitly.

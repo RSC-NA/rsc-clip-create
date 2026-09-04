@@ -1,0 +1,34 @@
+# VCS / tooling
+.git
+.gitignore
+.claude
+*.md
+!README.md
+
+# Node
+node_modules
+.next
+out
+npm-debug.log*
+
+# Python
+.venv
+__pycache__
+*.pyc
+.pytest_cache
+pyproject.toml
+
+# Local state that must never enter an image
+.env
+.env.*
+!.env.example
+backend/.env
+!backend/.env.example
+storage
+clip_create.db
+test-output
+backend/tests/fixtures/samples
+
+# Editor / OS
+.DS_Store
+*.tsbuildinfo

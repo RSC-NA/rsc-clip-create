@@ -127,7 +127,76 @@ The backend records detailed render outcomes in two dedicated tables:
 
 That data is surfaced in the editor and in the admin error console.
 
+## Running in Docker
+
+The whole stack — MySQL, the API, the render worker and the frontend — runs from one
+compose file:
+
+```bash
+docker compose up -d --build
+./scripts/docker-smoke.sh     # uploads, renders and downloads, to prove it works
+```
+
+Then open http://localhost:3000. Authentication is disabled by default (see below).
+
+| Service | Image | Port | Notes |
+| --- | --- | --- | --- |
+| `mysql` | mysql:8.4 | 3306 | healthcheck gates everything else |
+| `api` | `backend/Dockerfile` | 8000 | runs the schema creation and migrations at startup |
+| `worker` | same image, different command | — | waits for the API so the tables exist |
+| `web` | `Dockerfile` | 3000 | Next.js standalone output |
+
+The API and the worker share a `clip-storage` volume: the worker reads uploaded clips
+and writes renders back to where the API serves them from. `STORAGE_ROOT` is set to the
+absolute `/app/storage`, because the default relative path would otherwise resolve
+against each container's own working directory.
+
+### Two things worth knowing before changing configuration
+
+**The backend origin is baked into the frontend at build time.** Next evaluates
+`rewrites()` during `next build` and serialises the result into
+`routes-manifest.json`; it is not read at runtime. The compose file passes it as the
+`BACKEND_ORIGIN` build arg, so pointing the image at a different backend means
+rebuilding `web`. A `proxy.ts` would be runtime-configurable, but Next buffers the
+request body when one is used (10MB by default), which would break clip uploads far
+below the 500MB the API accepts.
+
+**Compose reads `./.env` for `${...}` substitution.** That is the same file the local
+Next dev server uses, so values there silently apply to the containers too. Override
+explicitly if that is not what you want:
+
+```bash
+docker compose --env-file .env.docker up -d
+```
+
+### Configuration
+
+Every value has a working default. The ones you are most likely to change:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `AUTH_ENABLED` | `false` | **Set to `true` before exposing this anywhere.** Left false, every request resolves to one shared local admin. |
+| `AUTH_BYPASS_ADMIN` | `true` | Whether that bypass user is an admin. |
+| `DISCORD_CLIENT_ID` / `_SECRET` | placeholders | Required once `AUTH_ENABLED=true`. |
+| `DISCORD_REDIRECT_URI` | `http://localhost:8000/api/v1/auth/discord/callback` | Must match the Discord app exactly. |
+| `ADMIN_DISCORD_IDS` | `[]` | JSON array string, e.g. `["123456789012345678"]`. |
+| `FASTAPI_PUBLIC_URL` | `http://localhost:8000` | Browser-facing; the API builds absolute download and logo URLs from it, so it must be reachable from the host, not from inside the compose network. |
+| `SECURE_COOKIES` | `false` | Set to `true` behind HTTPS. |
+
+### FFmpeg version
+
+The image installs Debian's ffmpeg (currently 7.1.x); development happens against 8.x.
+The renderer is written to work on both, but that took a fix: `setpts` clears a filter
+link's frame-rate metadata, and ffmpeg 7's `xfade` rejects an input whose rate reads as
+`1/0` where 8 tolerates it. Every branch feeding `xfade` therefore re-asserts `fps`
+*after* `setpts`. If you change the filter graph, run the integration suite against the
+container's ffmpeg as well as your own — this class of bug is invisible locally.
+
 ## Local development
+
+Without Docker, or for iterating on the frontend with hot reload:
+
+### Prerequisites
 
 ### 1. Start MySQL
 

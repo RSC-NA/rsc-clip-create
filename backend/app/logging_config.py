@@ -25,7 +25,12 @@ def configure_logging(level: str = "INFO") -> None:
                 }
             },
             "loggers": {
-                "backend": {"handlers": ["console"], "level": level, "propagate": False}
+                "backend": {"handlers": ["console"], "level": level, "propagate": False},
+                # Entry points run via `python -m` report __name__ as
+                # "__main__"; without this their records fall through to root.
+                "__main__": {"handlers": ["console"], "level": level, "propagate": False},
+                "uvicorn.error": {"handlers": ["console"], "level": level, "propagate": False},
+                "uvicorn.access": {"handlers": ["console"], "level": level, "propagate": False},
             },
             "root": {"handlers": ["console"], "level": "WARNING"},
         }

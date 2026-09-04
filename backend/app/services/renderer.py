@@ -305,7 +305,12 @@ def build_chain_command(
     for position, segment in enumerate(segments):
         idx = clip_inputs[position]
         graph.append(
-            f"[{idx}:v]{tail},trim=end_frame={segment.frames},setpts=PTS-STARTPTS[v{position}]"
+            f"[{idx}:v]{tail},trim=end_frame={segment.frames},"
+            # fps is re-asserted AFTER setpts: setpts clears the link's
+            # frame-rate metadata, and ffmpeg 7.x's xfade refuses an input
+            # whose rate reads as 1/0. 8.x tolerates it, so this only shows up
+            # off the development machine.
+            f"setpts=PTS-STARTPTS,fps={fps}[v{position}]"
         )
         graph.append(
             f"[{idx}:a]aresample=48000:first_pts=0,"
@@ -329,7 +334,8 @@ def build_chain_command(
         graph.append(
             f"[{idx}:v]crop={options.width}:{options.height}"
             f":x='{spec.pan_x_expr}':y='{spec.pan_y_expr}',{tail},"
-            f"trim=end_frame={boundary.sting_frames},setpts=PTS-STARTPTS[s{position}]"
+            f"trim=end_frame={boundary.sting_frames},"
+            f"setpts=PTS-STARTPTS,fps={fps}[s{position}]"
         )
         graph.append(
             f"anullsrc=r=48000:cl=stereo:d={_frames_to_seconds(boundary.sting_frames, fps)},"
