@@ -105,13 +105,23 @@ Any other font works the same way. Whatever you choose needs a glyph for `·` (U
 or every separator renders as a `.notdef` box; there is a test that checks this for the
 bundled face.
 
-## Team logos
+## Brand logo
 
-Upload a logo at `/logos` and tag it with a team name. The renderer matches it against
-the `team` token already parsed from each clip's filename, case-insensitively, so every
-clip for that team carries the mark with no per-clip work. A team with no logo, an
-unreadable image, or a missing file on disk falls back to the text-only label and never
-fails a render.
+One logo per account, shown in the centre of every transition sting. Upload it at
+`/logos`; re-uploading replaces it.
+
+This used to be a per-team library: logos were tagged with a team name, matched against
+the `team` token in each clip's filename, and composited into the clip's bottom-left
+label. Clip labels are text-only now, and the mark appears at the transitions instead.
+The migration collapses any existing per-team rows to one per user, keeping the most
+recent, and drops the team columns.
+
+A missing logo, an unreadable file, or a row pointing at a deleted file all degrade to a
+plain sting -- it never fails a render. `RENDER_STING_LOGO_SCALE` (default `0.34`) sets
+the size as a fraction of the frame's shorter side.
+
+Note the migration removes surplus rows in SQL, which does not unlink their files. Run
+`python -m backend.app.maintenance audit --fix` afterwards to clear them.
 
 ## Transitions
 

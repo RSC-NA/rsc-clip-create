@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     render_font_size: int = 56
     # Dark outline behind the label, now that there is no backing plate.
     render_label_stroke_width: int = 3
-    render_logo_max_width: int = 260
+    # Sting logo size as a fraction of the frame's shorter side.
+    render_sting_logo_scale: float = 0.34
     max_logo_size_bytes: int = 5242880
     max_logo_dimension: int = 4000
 

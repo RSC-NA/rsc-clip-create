@@ -1,6 +1,6 @@
 import { PageHeader } from "@/app/components/page-header";
 import { TimelineEditor } from "@/app/components/timeline-editor";
-import { getClientConfig, getLogos, getMovie } from "@/app/lib/api";
+import { getClientConfig, getMovie } from "@/app/lib/api";
 
 export default async function EditMoviePage({
   params,
@@ -8,9 +8,8 @@ export default async function EditMoviePage({
   params: Promise<{ movieId: string }>;
 }) {
   const { movieId } = await params;
-  const [movie, logos, config] = await Promise.all([
+  const [movie, config] = await Promise.all([
     getMovie(movieId),
-    getLogos(),
     getClientConfig(),
   ]);
 
@@ -26,7 +25,6 @@ export default async function EditMoviePage({
         availableClips={movie.clips}
         initialJob={movie.latestJob}
         initialSlots={movie.slots}
-        logoTeams={logos.map((logo) => logo.team.trim().toLowerCase())}
         minClipCount={config.minClipCount}
         movieId={movie.id}
         transitionHoldSeconds={movie.transitionHoldSeconds}

@@ -1,33 +1,19 @@
-import { LogoLibrary } from "@/app/components/logo-library";
+import { BrandLogo } from "@/app/components/brand-logo";
 import { PageHeader } from "@/app/components/page-header";
-import { SummaryCard } from "@/app/components/summary-card";
-import { getLogos } from "@/app/lib/api";
+import { getBrandLogo } from "@/app/lib/api";
 
 export default async function LogosPage() {
-  const logos = await getLogos();
+  const logo = await getBrandLogo();
 
   return (
     <main className="page-shell page-grid">
       <PageHeader
-        description="Logos are matched to clips by the team name in the filename. Upload one per team and every clip for that team carries it in the bottom-left label."
+        description="One logo, shown in the centre of every transition between clips. Clip labels are text only."
         eyebrow="Branding"
-        title="Team Logo Library"
+        title="Brand Logo"
       />
 
-      <section className="stats-grid">
-        <SummaryCard
-          detail="Teams with a logo ready to burn into their clips."
-          label="Teams Covered"
-          value={logos.length}
-        />
-        <SummaryCard
-          detail="Clips named team-player-tier.ext match on the first token."
-          label="Match Rule"
-          value="team"
-        />
-      </section>
-
-      <LogoLibrary logos={logos} />
+      <BrandLogo logo={logo} />
     </main>
   );
 }

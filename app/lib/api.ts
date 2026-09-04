@@ -93,8 +93,8 @@ export async function getJob(jobId: string) {
   return request<RenderJob>(`/jobs/${jobId}`);
 }
 
-export async function getLogos() {
-  return request<Logo[]>("/logos");
+export async function getBrandLogo() {
+  return request<Logo | null>("/logos");
 }
 
 export async function getClientConfig() {

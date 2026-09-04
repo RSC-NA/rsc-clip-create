@@ -57,7 +57,6 @@ export type MovieDetail = MovieSummary & {
 
 export type Logo = {
   id: string;
-  team: string;
   originalName: string;
   storagePath: string;
   imageUrl: string;

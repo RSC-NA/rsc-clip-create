@@ -49,24 +49,13 @@ def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips, make_
         hold_frames=hold_frames,
         blend_frames=hold_frames // 2,
         family="sweep",
-        wordmark="Sample Reel",
+        sting_logo_path=Path(make_logo().storage_path),
     )
 
-    # Give the first team a logo and leave the rest without one, so both label
-    # layouts appear in the output.
-    first_team = parse_clip_filename(sample_clips[0].name).team
-    logo_path = Path(make_logo(first_team).storage_path)
-
-    specs = []
-    for path in sample_clips:
-        parsed = parse_clip_filename(path.name)
-        specs.append(
-            ClipSpec(
-                source=path,
-                name=parsed,
-                logo_path=logo_path if parsed.team == first_team else None,
-            )
-        )
+    specs = [
+        ClipSpec(source=path, name=parse_clip_filename(path.name))
+        for path in sample_clips
+    ]
 
     directory = reset_output("samples")
     output = directory / "render.mp4"

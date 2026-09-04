@@ -12,6 +12,7 @@ from backend.app.services.brand import (
     MIRROR,
     TRANSITION_FAMILIES,
     create_label_image,
+    create_sting_image,
     plan_sting,
     resolve_font,
 )
@@ -155,40 +156,103 @@ def test_the_stroke_adds_contrast_without_a_plate(tmp_path):
     assert covered(stroked) > covered(bare)
 
 
-def test_label_is_full_frame_and_widens_for_a_logo(tmp_path):
-    logo = tmp_path / "logo.png"
-    Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(logo)
-
-    plain, with_logo = tmp_path / "plain.png", tmp_path / "logo-label.png"
-    create_label_image(NAME, plain)
-    create_label_image(NAME, with_logo, logo_path=logo)
-
-    assert Image.open(plain).size == (1920, 1080)
-    assert Image.open(with_logo).size == (1920, 1080)
-
-    def rendered_width(path):
-        bbox = Image.open(path).split()[-1].getbbox()
-        return bbox[2] - bbox[0]
-
-    assert rendered_width(with_logo) > rendered_width(plain)
+def test_label_is_full_frame(tmp_path):
+    out = tmp_path / "label.png"
+    create_label_image(NAME, out)
+    assert Image.open(out).size == (1920, 1080)
 
 
-def test_unreadable_logo_falls_back_to_text_only(tmp_path):
-    """A bad logo must never fail a render."""
+def test_the_label_carries_no_logo(tmp_path):
+    """Regression for a deliberate change: a per-team mark used to sit to the
+    left of the text. The brand logo lives in the sting centre now, so the
+    label must not accept or draw one."""
+    import inspect
+
+    params = inspect.signature(create_label_image).parameters
+    assert "logo_path" not in params
+    assert "logo_max_width" not in params
+
+
+# --------------------------------------------------------------------------
+# The brand logo, centred in every sting
+# --------------------------------------------------------------------------
+# Magenta, deliberately: the sting art is blue, orange and white, so a white
+# test mark is indistinguishable from the wedges' leading edges.
+MARK_COLOUR = (255, 0, 255)
+
+
+def _brand_mark(tmp_path, size=(400, 400)):
+    path = tmp_path / "brand.png"
+    Image.new("RGBA", size, MARK_COLOUR + (255,)).save(path)
+    return path
+
+
+def _sting_spec(index=0):
+    """Distinct from _sting above, which the transition-planning tests use."""
+    return plan_sting("m1", index, "sweep", sting_frames=36, fps=30, size=(1920, 1080))
+
+
+def test_the_sting_logo_lands_in_the_centre_of_the_canvas(tmp_path):
+    """The pan window's midpoint is the canvas centre, so a mark centred on the
+    canvas reads dead centre at the peak of the sweep."""
+    spec = _sting_spec()
+    out = tmp_path / "sting.png"
+    create_sting_image(spec, out, logo_path=_brand_mark(tmp_path))
+
+    image = Image.open(out).convert("RGBA")
+    width, height = image.size
+    # The mark is opaque white; the wedges behind it are not.
+    centre = image.getpixel((width // 2, height // 2))
+    assert centre[:3] == MARK_COLOUR, f"expected the mark at the centre, got {centre}"
+
+
+def test_a_sting_without_a_logo_still_renders(tmp_path):
+    spec = _sting_spec()
+    out = tmp_path / "plain.png"
+    create_sting_image(spec, out, logo_path=None)
+    assert Image.open(out).size == spec.canvas
+
+
+def test_an_unreadable_sting_logo_degrades_to_a_plain_sting(tmp_path):
+    """A broken logo must never fail a render."""
     broken = tmp_path / "broken.png"
-    broken.write_bytes(b"this is not an image")
+    broken.write_bytes(b"not an image")
+    spec = _sting_spec()
 
-    plain, broken_label = tmp_path / "plain.png", tmp_path / "broken-label.png"
-    create_label_image(NAME, plain)
-    create_label_image(NAME, broken_label, logo_path=broken)
+    plain, with_broken = tmp_path / "a.png", tmp_path / "b.png"
+    create_sting_image(spec, plain, logo_path=None)
+    create_sting_image(spec, with_broken, logo_path=broken)
 
-    assert Image.open(broken_label).tobytes() == Image.open(plain).tobytes()
+    assert Image.open(with_broken).tobytes() == Image.open(plain).tobytes()
 
 
-def test_missing_logo_path_is_ignored(tmp_path):
+def test_a_missing_sting_logo_path_is_ignored(tmp_path):
+    spec = _sting_spec()
     out = tmp_path / "out.png"
-    create_label_image(NAME, out, logo_path=tmp_path / "nope.png")
+    create_sting_image(spec, out, logo_path=tmp_path / "nope.png")
     assert out.is_file()
+
+
+def test_the_sting_logo_is_sized_against_the_frame_not_the_canvas(tmp_path):
+    """Otherwise a vertical sweep, whose canvas is twice as tall, would carry a
+    mark of a different apparent size than a horizontal one."""
+    mark = _brand_mark(tmp_path)
+    widths = []
+    for index in range(6):
+        spec = _sting_spec(index)
+        out = tmp_path / f"s{index}.png"
+        create_sting_image(spec, out, logo_path=mark, logo_scale=0.25)
+        # Measure the mark by scanning the canvas centre row for its colour.
+        image = Image.open(out).convert("RGBA")
+        row = spec.canvas[1] // 2
+        span = [
+            x for x in range(spec.canvas[0])
+            if image.getpixel((x, row))[:3] == MARK_COLOUR
+        ]
+        widths.append(max(span) - min(span) if span else 0)
+
+    expected = round(min(1920, 1080) * 0.25)
+    assert all(abs(w - expected) <= 8 for w in widths), widths
 
 
 def test_font_resolution_is_host_independent_and_legible():

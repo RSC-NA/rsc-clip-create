@@ -169,23 +169,51 @@ def _load_logo(logo_path: Path | None, max_width: int, target_height: int):
     return logo.resize((width, height), Image.LANCZOS)
 
 
+def _load_sting_logo(
+    logo_path: Path | None, frame: tuple[int, int], scale: float
+) -> Image.Image | None:
+    """Load and size the brand mark for the centre of a sting.
+
+    Sized against the FRAME, not the oversized pan canvas, so the mark occupies
+    the same proportion of the visible picture whichever way the sweep travels.
+    A missing or unreadable file yields a plain sting rather than an error.
+    """
+    if logo_path is None:
+        return None
+    try:
+        with Image.open(logo_path) as raw:
+            logo = ImageOps.exif_transpose(raw).convert("RGBA")
+    except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
+        logger.warning("ignoring unreadable sting logo %s: %s", logo_path, exc)
+        return None
+
+    frame_width, frame_height = frame
+    target = max(1, round(min(frame_width, frame_height) * scale))
+    if logo.width >= logo.height:
+        size = (target, max(1, round(logo.height * target / logo.width)))
+    else:
+        size = (max(1, round(logo.width * target / logo.height)), target)
+    return logo.resize(size, Image.LANCZOS)
+
+
 def create_label_image(
     name: ParsedClipName,
     destination: Path,
     *,
-    logo_path: Path | None = None,
     font_size: int = 56,
     font_path: Path | None = None,
-    logo_max_width: int = 260,
     stroke_width: int = 3,
     canvas: tuple[int, int] = (1920, 1080),
 ) -> None:
     """Full-frame RGBA overlay: one line of text, bottom left, no backing plate.
 
+    Text only. The brand logo lives in the centre of each transition sting now,
+    not on the clip; this used to composite a per-team mark to the left of the
+    text.
+
     The text is drawn with a dark stroke rather than sitting on a translucent
-    box. Without either, white type disappears over pale footage; the stroke
-    keeps it readable while leaving the frame otherwise untouched. Set
-    ``stroke_width=0`` for bare text.
+    box. Without either, white type disappears over pale footage. Set
+    ``stroke_width=0`` for bare glyphs.
     """
     width, height = canvas
     image = Image.new("RGBA", canvas, (0, 0, 0, 0))
@@ -196,31 +224,13 @@ def create_label_image(
     left, top, right, bottom = draw.textbbox(
         (0, 0), text, font=font, stroke_width=stroke_width
     )
-    text_width, text_height = right - left, bottom - top
-
-    # Sized against the line height rather than matched to it: on a single
-    # line an exact match leaves the mark looking incidental.
-    logo = _load_logo(logo_path, logo_max_width, round(text_height * 1.6))
-    gap = 18
+    text_height = bottom - top
 
     margin_left, margin_bottom = 40, 44
-    content_height = max(text_height, logo.height if logo else 0)
-    content_bottom = height - margin_bottom
-    content_top = content_bottom - content_height
+    text_y = height - margin_bottom - text_height - top
 
-    if logo:
-        # alpha_composite, not paste: paste() does source-over on RGB while
-        # ignoring destination alpha, which blows out antialiased logo edges
-        # against the transparent canvas.
-        image.alpha_composite(
-            logo,
-            dest=(margin_left, content_top + (content_height - logo.height) // 2),
-        )
-
-    text_x = margin_left + ((logo.width + gap) if logo else 0)
-    text_y = content_top + (content_height - text_height) // 2 - top
     draw.text(
-        (text_x, text_y),
+        (margin_left, text_y),
         text,
         font=font,
         fill=(255, 255, 255, 255),
@@ -335,8 +345,8 @@ def create_sting_image(
     spec: StingSpec,
     destination: Path,
     *,
-    wordmark: str | None = None,
-    font_path: Path | None = None,
+    logo_path: Path | None = None,
+    logo_scale: float = 0.34,
 ) -> None:
     """Render the brand card that ffmpeg pans across during a transition.
 
@@ -374,17 +384,13 @@ def create_sting_image(
         draw = ImageDraw.Draw(image)
     width, height = image.size
 
-    if wordmark:
-        try:
-            font = resolve_font(max(48, spec.frame[1] // 14), font_path)
-            left, top, right, bottom = draw.multiline_textbbox((0, 0), wordmark, font=font)
-            draw.text(
-                ((width - (right - left)) / 2, (height - (bottom - top)) / 2 - top),
-                wordmark,
-                font=font,
-                fill=(255, 255, 255, 235),
-            )
-        except FontError as exc:
-            logger.warning("skipping sting wordmark: %s", exc)
+    # Centred on the canvas, not the frame: the window pans across this image,
+    # and its midpoint is the canvas centre, so the mark reads dead centre at
+    # the peak of the sweep.
+    mark = _load_sting_logo(logo_path, spec.frame, logo_scale)
+    if mark is not None:
+        image.alpha_composite(
+            mark, dest=((width - mark.width) // 2, (height - mark.height) // 2)
+        )
 
     image.save(destination, format="PNG")

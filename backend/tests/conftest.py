@@ -227,15 +227,15 @@ def make_movie(db_session, user):
 
 @pytest.fixture
 def make_logo(db_session, user, tmp_path):
+    """The brand logo -- one per user, drawn in the centre of every sting."""
+
     from PIL import Image
 
-    def _make(team="Falcons", *, owner=None, size=(120, 120)):
-        path = tmp_path / f"{team.lower()}-{uuid.uuid4().hex[:8]}.png"
+    def _make(*, owner=None, size=(120, 120)):
+        path = tmp_path / f"brand-{uuid.uuid4().hex[:8]}.png"
         Image.new("RGBA", size, (255, 200, 0, 255)).save(path)
         logo = Logo(
             user_id=(owner or user).id,
-            team=team,
-            team_normalized=team.strip().lower(),
             original_name=path.name,
             storage_path=str(path),
         )

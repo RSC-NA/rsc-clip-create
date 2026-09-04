@@ -86,17 +86,17 @@ class Clip(TimestampMixin, Base):
 
 
 class Logo(TimestampMixin, Base):
-    """A team logo, matched to clips by the team token in their filename."""
+    """The brand logo, shown in the centre of every transition sting.
+
+    One per user: this was previously a per-team library matched against the
+    team token in a clip's filename, and clip labels are text-only now.
+    """
 
     __tablename__ = "logos"
-    __table_args__ = (
-        UniqueConstraint("user_id", "team_normalized", name="uq_logos_user_team"),
-    )
+    __table_args__ = (UniqueConstraint("user_id", name="uq_logos_user"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_value)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
-    team: Mapped[str] = mapped_column(String(255))
-    team_normalized: Mapped[str] = mapped_column(String(255), index=True)
     original_name: Mapped[str] = mapped_column(String(255))
     storage_path: Mapped[str] = mapped_column(Text)
 

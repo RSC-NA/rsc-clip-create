@@ -41,7 +41,6 @@ class RenderError(RuntimeError):
 class ClipSpec:
     source: Path
     name: ParsedClipName
-    logo_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -53,11 +52,13 @@ class RenderOptions:
     hold_frames: int = 18
     blend_frames: int = 9
     family: str = brand.DEFAULT_FAMILY
-    wordmark: str | None = None
+    # Centred in every sting. Replaces the movie-title wordmark that used to
+    # sit there, and the per-team marks that used to sit on the clip labels.
+    sting_logo_path: Path | None = None
+    sting_logo_scale: float = 0.34
     font_path: Path | None = None
     font_size: int = 56
     stroke_width: int = 3
-    logo_max_width: int = 260
     blue: str = "#0B5CD5"
     orange: str = "#FF7A18"
 
@@ -147,10 +148,8 @@ def normalize_clip(
     brand.create_label_image(
         spec.name,
         label_png,
-        logo_path=spec.logo_path,
         font_size=options.font_size,
         font_path=options.font_path,
-        logo_max_width=options.logo_max_width,
         stroke_width=options.stroke_width,
         canvas=(options.width, options.height),
     )
@@ -245,7 +244,10 @@ def plan_boundaries(
             png = (workdir / f"sting-{index:04d}.png") if workdir else None
             if png is not None:
                 brand.create_sting_image(
-                    spec, png, wordmark=options.wordmark, font_path=options.font_path
+                    spec,
+                    png,
+                    logo_path=options.sting_logo_path,
+                    logo_scale=options.sting_logo_scale,
                 )
             boundary = Boundary(
                 index=index, blend_frames=blend, hold_frames=hold,

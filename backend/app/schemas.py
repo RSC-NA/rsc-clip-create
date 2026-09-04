@@ -39,7 +39,6 @@ class ClipResponse(BaseModel):
 
 class LogoResponse(BaseModel):
     id: str
-    team: str
     originalName: str
     storagePath: str
     imageUrl: str

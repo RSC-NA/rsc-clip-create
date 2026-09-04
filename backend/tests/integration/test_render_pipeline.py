@@ -30,13 +30,9 @@ def _options(**kwargs):
     return RenderOptions(**{**defaults, **kwargs})
 
 
-def _specs(paths, logo_path=None):
+def _specs(paths):
     return [
-        ClipSpec(
-            source=path,
-            name=ParsedClipName("Falcons", f"P{index}", "Gold", "mp4"),
-            logo_path=logo_path,
-        )
+        ClipSpec(source=path, name=ParsedClipName("Falcons", f"P{index}", "Gold", "mp4"))
         for index, path in enumerate(paths)
     ]
 
@@ -121,18 +117,25 @@ def test_a_different_movie_gets_different_transitions(make_media, tmp_path):
            [t["axis"] for t in a["transitions"]] != [t["axis"] for t in b["transitions"]]
 
 
-def test_a_logo_is_applied_to_one_team_and_not_another(make_media, tmp_path, make_logo):
+def test_the_brand_logo_renders_into_the_stings(make_media, tmp_path, make_logo):
+    """One logo for the whole movie, centred in each transition -- not the
+    per-clip, per-team marks the labels used to carry."""
     from pathlib import Path
 
-    logo = Path(make_logo("Falcons").storage_path)
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(2)]
-    specs = [
-        ClipSpec(clips[0], ParsedClipName("Falcons", "A", "Gold", "mp4"), logo_path=logo),
-        ClipSpec(clips[1], ParsedClipName("Ravens", "B", "Silver", "mp4"), logo_path=None),
-    ]
+    logo = Path(make_logo().storage_path)
+    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
     output = tmp_path / "out.mp4"
 
-    render_movie(specs, output, _options())
+    media = render_movie(_specs(clips), output, _options(sting_logo_path=logo))
+
+    assert output.stat().st_size > 0
+    assert len([t for t in media["transitions"] if not t.get("hard_cut")]) == 2
+
+
+def test_a_movie_with_no_brand_logo_still_renders(make_media, tmp_path):
+    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(2)]
+    output = tmp_path / "out.mp4"
+    render_movie(_specs(clips), output, _options(sting_logo_path=None))
     assert output.stat().st_size > 0
 
 

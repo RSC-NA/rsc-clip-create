@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import type {
@@ -64,7 +63,6 @@ export function TimelineEditor({
   transitionStyle,
   transitionHoldSeconds,
   transitionStyles,
-  logoTeams,
   minClipCount,
 }: {
   movieId: string;
@@ -74,7 +72,6 @@ export function TimelineEditor({
   transitionStyle: string;
   transitionHoldSeconds: number;
   transitionStyles: string[];
-  logoTeams: string[];
   minClipCount: number;
 }) {
   const router = useRouter();
@@ -322,25 +319,11 @@ export function TimelineEditor({
                 {slot.clipId ? (() => {
                   const clip = availableClips.find((item) => item.id === slot.clipId);
                   if (!clip) return null;
-                  const hasLogo =
-                    clip.team != null &&
-                    logoTeams.includes(clip.team.trim().toLowerCase());
                   return (
-                    <div className="stack-sm">
-                      <p className="text-soft">
-                        Label: {clip.team ?? "?"} / {clip.player ?? "?"} /{" "}
-                        {clip.tier ?? "?"}
-                      </p>
-                      {hasLogo ? (
-                        <span className="badge" data-tone="success">
-                          {clip.team} logo
-                        </span>
-                      ) : (
-                        <Link className="text-soft" href="/logos">
-                          No logo for {clip.team ?? "this team"} - add one
-                        </Link>
-                      )}
-                    </div>
+                    <p className="text-soft">
+                      Label: {clip.team ?? "?"} · {clip.player ?? "?"} ·{" "}
+                      {clip.tier ?? "?"}
+                    </p>
                   );
                 })() : null}
 

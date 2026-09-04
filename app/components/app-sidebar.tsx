@@ -14,7 +14,7 @@ type SidebarItem = {
 const baseItems: SidebarItem[] = [
   { href: "/movies", label: "Movies", shortLabel: "Mv" },
   { href: "/movies/new", label: "New Movie", shortLabel: "New" },
-  { href: "/logos", label: "Logos", shortLabel: "Lg" },
+  { href: "/logos", label: "Brand Logo", shortLabel: "Lg" },
   { href: "/logout", label: "Logout", shortLabel: "Out" },
 ];
 

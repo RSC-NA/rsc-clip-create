@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from backend.app.config import get_settings
 from backend.app.filename_parser import ParsedClipName
 from backend.app.models import Clip, Movie, RenderJob, RenderJobAttempt, RenderJobClipResult, Video
-from backend.app.routers.logos import resolve_logo_path
+from backend.app.routers.logos import resolve_brand_logo
 from backend.app.services import brand
 from backend.app.services.renderer import ClipSpec, RenderError, RenderOptions, render_movie
 from backend.app.storage import output_path
@@ -138,10 +138,10 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             hold_frames=max(0, round(hold_seconds * settings.render_fps)),
             blend_frames=settings.render_blend_frames,
             family=movie.transition_style or settings.render_transition_style,
-            wordmark=movie.title,
+            sting_logo_path=resolve_brand_logo(db, movie.user_id),
+            sting_logo_scale=settings.render_sting_logo_scale,
             font_path=settings.render_font_path,
             font_size=settings.render_font_size,
-            logo_max_width=settings.render_logo_max_width,
             stroke_width=settings.render_label_stroke_width,
             blue=settings.render_brand_blue,
             orange=settings.render_brand_orange,
@@ -168,7 +168,6 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
                     name=ParsedClipName(
                         clip.team, clip.player, clip.tier, clip.extension or "mp4"
                     ),
-                    logo_path=resolve_logo_path(db, movie.user_id, clip.team),
                 )
                 for _, clip, _ in selected
             ],

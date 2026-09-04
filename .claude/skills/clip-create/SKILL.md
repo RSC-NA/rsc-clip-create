@@ -94,10 +94,16 @@ than throwing.
   is no component library. Reuse `PageHeader`, `SummaryCard`, `StatusBadge`.
 - JSX props are alphabetized in existing components. Keep it.
 
-**Labels** are one line, middle-dot separated (`Falcons · Ace · Gold`), drawn with a
-stroke and no backing plate. The face is Anton, vendored at
+**Labels** are one line, middle-dot separated (`Falcons · Ace · Gold`), text only, drawn
+with a stroke and no backing plate. The face is Anton, vendored at
 `backend/app/assets/fonts/` -- Ultimatum, which was asked for, is not on Google Fonts.
 `RENDER_FONT_PATH` overrides it. A replacement font needs a `·` (U+00B7) glyph.
+
+**The brand logo** is one per user (`Logo`, unique on `user_id`), centred in every
+transition sting by `brand.create_sting_image`. It was a per-team library matched on the
+filename's team token and composited into the label; `ensure_single_brand_logo` migrates
+that shape away. Sized against the *frame*, not the oversized pan canvas, so it looks the
+same whichever way a sweep travels.
 
 **Filenames are the contract.** Uploads must be `team-player-tier.ext`, parsed by
 `backend/app/filename_parser.py` into the three-line label burned bottom-left. The regex is
