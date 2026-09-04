@@ -72,6 +72,39 @@ Limits and supported extensions can be configured with `MIN_CLIP_COUNT`,
 `MAX_CLIP_COUNT`, `MAX_CLIP_SIZE_BYTES`, `MAX_CLIP_DURATION_SECONDS`, and
 `SUPPORTED_CLIP_EXTENSIONS`.
 
+## Clip labels
+
+Each clip carries one line in the bottom-left corner, its parts separated by middle
+dots and drawn straight onto the frame with no backing plate:
+
+```
+Falcons · Ace Rivera · Gold
+```
+
+The text is stroked rather than boxed. White type over pale footage is unreadable on
+its own, and the stroke keeps it legible without putting a rectangle on the picture.
+Set `RENDER_LABEL_STROKE_WIDTH=0` for bare glyphs.
+
+### The font
+
+The renderer draws server-side with Pillow, so the face has to be a real font file, not
+a webfont link. **Anton** is vendored at `backend/app/assets/fonts/` (SIL OFL, licence
+alongside it) and is the default, which also keeps rendering identical on every host.
+
+**Anton stands in for Ultimatum, which is not published on Google Fonts** — there is no
+family by that name in the catalogue. To use the real Ultimatum, drop the `.ttf`
+somewhere the API and worker can both read and point `RENDER_FONT_PATH` at it:
+
+```yaml
+# docker-compose.yml, on both the api and worker services
+environment:
+  RENDER_FONT_PATH: /app/storage/fonts/Ultimatum.ttf
+```
+
+Any other font works the same way. Whatever you choose needs a glyph for `·` (U+00B7)
+or every separator renders as a `.notdef` box; there is a test that checks this for the
+bundled face.
+
 ## Team logos
 
 Upload a logo at `/logos` and tag it with a team name. The renderer matches it against

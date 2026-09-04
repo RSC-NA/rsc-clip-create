@@ -142,6 +142,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             font_path=settings.render_font_path,
             font_size=settings.render_font_size,
             logo_max_width=settings.render_logo_max_width,
+            stroke_width=settings.render_label_stroke_width,
             blue=settings.render_brand_blue,
             orange=settings.render_brand_orange,
         )

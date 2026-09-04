@@ -55,7 +55,9 @@ class Settings(BaseSettings):
     render_brand_blue: str = "#0B5CD5"
     render_brand_orange: str = "#FF7A18"
     render_font_path: Path | None = None
-    render_font_size: int = 42
+    render_font_size: int = 56
+    # Dark outline behind the label, now that there is no backing plate.
+    render_label_stroke_width: int = 3
     render_logo_max_width: int = 260
     max_logo_size_bytes: int = 5242880
     max_logo_dimension: int = 4000

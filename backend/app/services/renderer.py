@@ -55,7 +55,8 @@ class RenderOptions:
     family: str = brand.DEFAULT_FAMILY
     wordmark: str | None = None
     font_path: Path | None = None
-    font_size: int = 42
+    font_size: int = 56
+    stroke_width: int = 3
     logo_max_width: int = 260
     blue: str = "#0B5CD5"
     orange: str = "#FF7A18"
@@ -150,6 +151,7 @@ def normalize_clip(
         font_size=options.font_size,
         font_path=options.font_path,
         logo_max_width=options.logo_max_width,
+        stroke_width=options.stroke_width,
         canvas=(options.width, options.height),
     )
 

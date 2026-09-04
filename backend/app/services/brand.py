@@ -114,19 +114,33 @@ class FontError(RuntimeError):
     """No usable font could be resolved."""
 
 
+# Vendored so every host renders identically. Anton is SIL OFL; the licence
+# ships alongside it. See BUNDLED_FONT_NOTE for why this face and not another.
+BUNDLED_FONT = Path(__file__).resolve().parents[1] / "assets" / "fonts" / "Anton-Regular.ttf"
+
+BUNDLED_FONT_NOTE = (
+    "Anton stands in for Ultimatum, which is not published on Google Fonts. "
+    "Point RENDER_FONT_PATH at an Ultimatum .ttf to use the real thing."
+)
+
+
 def resolve_font(size: int, explicit: Path | None = None) -> ImageFont.FreeTypeFont:
     """Resolve a font deterministically.
 
-    The previous implementation scanned three host paths, so the same movie
-    rendered on macOS (Arial) and Linux (DejaVu) produced different labels. It
-    also called ``load_default()`` with no size, which returns a real FreeType
-    font but at 10px -- illegible on a 1920x1080 frame.
+    An earlier implementation scanned three host paths, so the same movie
+    rendered on macOS (Arial) and Linux (DejaVu) produced different labels, and
+    it fell back to a 10px face that was illegible on a 1080p frame. The font
+    is now vendored, with RENDER_FONT_PATH as the override.
     """
     if explicit is not None:
         if not Path(explicit).is_file():
             raise FontError(f"Configured render font is missing: {explicit}")
         return ImageFont.truetype(str(explicit), size)
 
+    if BUNDLED_FONT.is_file():
+        return ImageFont.truetype(str(BUNDLED_FONT), size)
+
+    logger.warning("bundled font missing at %s; falling back to Pillow's", BUNDLED_FONT)
     font = ImageFont.load_default(size=size)
     if not isinstance(font, ImageFont.FreeTypeFont):
         raise FontError("Pillow was built without FreeType; set RENDER_FONT_PATH.")
@@ -160,15 +174,18 @@ def create_label_image(
     destination: Path,
     *,
     logo_path: Path | None = None,
-    font_size: int = 42,
+    font_size: int = 56,
     font_path: Path | None = None,
     logo_max_width: int = 260,
+    stroke_width: int = 3,
     canvas: tuple[int, int] = (1920, 1080),
 ) -> None:
-    """Full-frame RGBA overlay with the three-line label, bottom left.
+    """Full-frame RGBA overlay: one line of text, bottom left, no backing plate.
 
-    When a logo resolves it sits to the left of the text on the same plate.
-    With no logo the layout matches the original text-only geometry.
+    The text is drawn with a dark stroke rather than sitting on a translucent
+    box. Without either, white type disappears over pale footage; the stroke
+    keeps it readable while leaving the frame otherwise untouched. Set
+    ``stroke_width=0`` for bare text.
     """
     width, height = canvas
     image = Image.new("RGBA", canvas, (0, 0, 0, 0))
@@ -176,38 +193,39 @@ def create_label_image(
     font = resolve_font(font_size, font_path)
 
     text = name.label
-    left, top, right, bottom = draw.multiline_textbbox((0, 0), text, font=font, spacing=8)
+    left, top, right, bottom = draw.textbbox(
+        (0, 0), text, font=font, stroke_width=stroke_width
+    )
     text_width, text_height = right - left, bottom - top
 
-    logo = _load_logo(logo_path, logo_max_width, text_height)
-    pad, gap = 18, 16
+    # Sized against the line height rather than matched to it: on a single
+    # line an exact match leaves the mark looking incidental.
+    logo = _load_logo(logo_path, logo_max_width, round(text_height * 1.6))
+    gap = 18
 
-    logo_width = logo.width if logo else 0
-    content_width = text_width + ((logo_width + gap) if logo else 0)
+    margin_left, margin_bottom = 40, 44
     content_height = max(text_height, logo.height if logo else 0)
-
-    box_left, box_bottom = 22, height - 20
-    box_height = pad * 2 + content_height
-    box_top = box_bottom - box_height
-    box_right = min(width - 22, box_left + pad * 2 + content_width)
-
-    draw.rounded_rectangle(
-        (box_left, box_top, box_right, box_bottom), radius=12, fill=(0, 0, 0, 140)
-    )
+    content_bottom = height - margin_bottom
+    content_top = content_bottom - content_height
 
     if logo:
-        # alpha_composite, not paste: the plate underneath is alpha=140, and
-        # paste() does source-over on RGB while ignoring destination alpha,
-        # which blows out antialiased logo edges.
+        # alpha_composite, not paste: paste() does source-over on RGB while
+        # ignoring destination alpha, which blows out antialiased logo edges
+        # against the transparent canvas.
         image.alpha_composite(
             logo,
-            dest=(box_left + pad, box_top + (box_height - logo.height) // 2),
+            dest=(margin_left, content_top + (content_height - logo.height) // 2),
         )
 
-    text_x = box_left + pad + ((logo_width + gap) if logo else 0)
-    text_y = box_top + (box_height - text_height) // 2 - top
-    draw.multiline_text(
-        (text_x, text_y), text, font=font, fill=(255, 255, 255, 255), spacing=8
+    text_x = margin_left + ((logo.width + gap) if logo else 0)
+    text_y = content_top + (content_height - text_height) // 2 - top
+    draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=(255, 255, 255, 255),
+        stroke_width=stroke_width,
+        stroke_fill=(0, 0, 0, 190),
     )
     image.save(destination, format="PNG")
 

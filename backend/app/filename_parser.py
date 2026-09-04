@@ -25,6 +25,10 @@ FILENAME_RE = re.compile(
     rf"\.(?P<extension>{_EXTENSION})$"
 )
 
+# U+00B7 MIDDLE DOT. Verified present in the bundled Anton face; a font
+# without it would render .notdef boxes between every word.
+LABEL_SEPARATOR = " · "
+
 MAX_SEGMENT_LENGTH = 80
 
 
@@ -37,7 +41,8 @@ class ParsedClipName:
 
     @property
     def label(self) -> str:
-        return f"{self.team}\n{self.player}\n{self.tier}"
+        """One line, middle-dot separated: "Falcons · Ace · Gold"."""
+        return LABEL_SEPARATOR.join((self.team, self.player, self.tier))
 
 
 def parse_clip_filename(filename: str, allowed_extensions: set[str] | None = None) -> ParsedClipName:

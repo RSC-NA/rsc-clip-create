@@ -2,10 +2,12 @@ import subprocess
 import sys
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from backend.app.filename_parser import ParsedClipName
+from backend.app.filename_parser import LABEL_SEPARATOR
 from backend.app.services.brand import (
+    BUNDLED_FONT,
     DEFAULT_FAMILY,
     MIRROR,
     TRANSITION_FAMILIES,
@@ -13,6 +15,12 @@ from backend.app.services.brand import (
     plan_sting,
     resolve_font,
 )
+
+
+def _render(text: str, font) -> bytes:
+    image = Image.new("L", (200, 120), 0)
+    ImageDraw.Draw(image).text((10, 10), text, font=font, fill=255)
+    return image.tobytes()
 
 
 NAME = ParsedClipName("Falcons", "Ace Rivera", "Gold", "mp4")
@@ -90,6 +98,63 @@ def test_pan_canvas_is_larger_along_the_travel_axis():
             assert (width, height) == (3840, 2160)
 
 
+def test_label_is_one_line_separated_by_dots():
+    assert NAME.label == "Falcons · Ace Rivera · Gold"
+    assert "\n" not in NAME.label
+
+
+def test_the_bundled_font_is_used_by_default():
+    """Vendored so every host renders identically, and so the middle-dot
+    separator is guaranteed to have a glyph."""
+    assert BUNDLED_FONT.is_file()
+    assert resolve_font(56).getname()[0] == "Anton"
+
+
+def test_the_separator_has_a_glyph_in_the_bundled_font():
+    """A missing glyph renders as .notdef -- a box between every word."""
+    font = resolve_font(56)
+    absent = _render("\ue000", font)          # private use area: always missing
+    separator = _render(LABEL_SEPARATOR.strip(), font)
+    assert separator != absent
+    assert any(separator)
+
+
+def test_the_label_has_no_backing_plate(tmp_path):
+    """Regression for a deliberate design change: the text used to sit on a
+    translucent rounded rectangle. Only the glyphs and their stroke should be
+    opaque now, so the alpha channel must be mostly empty."""
+    out = tmp_path / "plain.png"
+    create_label_image(NAME, out, stroke_width=0)
+
+    alpha = Image.open(out).split()[-1]
+    covered = sum(1 for value in alpha.getdata() if value > 0)
+    frame = alpha.size[0] * alpha.size[1]
+    assert covered / frame < 0.02, "something opaque is still being drawn"
+
+    # The decisive check, and the reason it is a fraction rather than "is any
+    # pixel transparent": the old plate had rounded corners, so it too contained
+    # a few transparent pixels. Measured, the plate left 0.1% of its bounding box
+    # transparent; bare glyphs leave 45%, and glyphs with a stroke 27%.
+    box = alpha.getbbox()
+    interior = list(alpha.crop(box).getdata())
+    transparent = sum(1 for value in interior if value == 0) / len(interior)
+    assert transparent > 0.20, (
+        f"only {transparent:.1%} of the label's bounding box is transparent; "
+        "a backing plate appears to have returned"
+    )
+
+
+def test_the_stroke_adds_contrast_without_a_plate(tmp_path):
+    bare, stroked = tmp_path / "bare.png", tmp_path / "stroked.png"
+    create_label_image(NAME, bare, stroke_width=0)
+    create_label_image(NAME, stroked, stroke_width=3)
+
+    def covered(path):
+        return sum(1 for value in Image.open(path).split()[-1].getdata() if value > 0)
+
+    assert covered(stroked) > covered(bare)
+
+
 def test_label_is_full_frame_and_widens_for_a_logo(tmp_path):
     logo = tmp_path / "logo.png"
     Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(logo)
@@ -101,11 +166,11 @@ def test_label_is_full_frame_and_widens_for_a_logo(tmp_path):
     assert Image.open(plain).size == (1920, 1080)
     assert Image.open(with_logo).size == (1920, 1080)
 
-    def plate_width(path):
-        alpha = Image.open(path).split()[-1]
-        return alpha.getbbox()[2] - alpha.getbbox()[0]
+    def rendered_width(path):
+        bbox = Image.open(path).split()[-1].getbbox()
+        return bbox[2] - bbox[0]
 
-    assert plate_width(with_logo) > plate_width(plain)
+    assert rendered_width(with_logo) > rendered_width(plain)
 
 
 def test_unreadable_logo_falls_back_to_text_only(tmp_path):
