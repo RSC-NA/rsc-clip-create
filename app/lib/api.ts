@@ -1,5 +1,6 @@
 import "server-only";
 import { cookies } from "next/headers";
+import { notFound, redirect } from "next/navigation";
 import type {
   AdminDashboard,
   AdminError,
@@ -50,8 +51,17 @@ async function request<T>(path: string, options: ApiOptions = {}): Promise<T> {
   });
 
   if (!response.ok) {
-    if (response.status === 401 && options.allowUnauthorized) {
-      return null as T;
+    if (response.status === 401) {
+      if (options.allowUnauthorized) {
+        return null as T;
+      }
+      // An expired cookie used to surface as a generic crash page; send the
+      // user somewhere they can act on instead.
+      redirect("/login");
+    }
+
+    if (response.status === 404) {
+      notFound();
     }
 
     const message = await response.text();

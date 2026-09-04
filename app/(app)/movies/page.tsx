@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { DeleteButton } from "@/app/components/delete-button";
 import { PageHeader } from "@/app/components/page-header";
 import { StatusBadge } from "@/app/components/status-badge";
 import { SummaryCard } from "@/app/components/summary-card";
@@ -41,6 +42,12 @@ export default async function MoviesPage() {
       </section>
 
       <section className="table-card">
+        {movies.length === 0 ? (
+          <div className="empty-state">
+            No movies yet. <Link href="/movies/new">Create your first movie</Link> by
+            uploading clips named team-player-tier.
+          </div>
+        ) : (
         <table>
           <thead>
             <tr>
@@ -49,6 +56,7 @@ export default async function MoviesPage() {
               <th>Slots</th>
               <th>Latest Output</th>
               <th>Updated</th>
+              <th />
             </tr>
           </thead>
           <tbody>
@@ -74,10 +82,17 @@ export default async function MoviesPage() {
                   ) : "No render yet"}
                 </td>
                 <td>{new Date(movie.updatedAt).toLocaleString()}</td>
+                <td>
+                  <DeleteButton
+                    label={`Delete ${movie.title}`}
+                    path={`/movies/${movie.id}`}
+                  />
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
+        )}
       </section>
     </main>
   );

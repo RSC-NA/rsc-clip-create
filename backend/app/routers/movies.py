@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
+
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session, selectinload
 
@@ -33,6 +36,7 @@ from backend.app.schemas import (
 )
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/movies", tags=["movies"])
 settings = get_settings()
 
@@ -377,3 +381,61 @@ def queue_render(
     db.refresh(job)
     db.refresh(attempt)
     return _job_response(job)
+
+def _unlink(path_value: str | None) -> None:
+    """Best-effort file removal. A failure here leaves an orphaned file, which
+    the maintenance audit reports; it must never fail the request."""
+    if not path_value:
+        return
+    try:
+        Path(path_value).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not remove %s", path_value, exc_info=True)
+
+
+@router.delete("/{movie_id}", status_code=204)
+def delete_movie(
+    movie_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Delete a movie, its timeline, its render history and its outputs.
+
+    Order matters and is not enforced by the schema: Video.movie_id references
+    movies and Movie.latest_video_id references videos, and videos also cite
+    render attempts that the movie's ORM cascade deletes. Unwinding in the
+    wrong order raises IntegrityError on MySQL.
+    """
+    movie = db.scalar(
+        select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id)
+    )
+    if movie is None:
+        raise HTTPException(status_code=404, detail="Movie not found.")
+
+    active = db.scalar(
+        select(RenderJob).where(
+            RenderJob.movie_id == movie.id,
+            RenderJob.status.in_(["queued", "running"]),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A render is in progress for this movie. Wait for it to finish.",
+        )
+
+    videos = db.scalars(select(Video).where(Video.movie_id == movie.id)).all()
+    paths = [video.storage_path for video in videos]
+
+    movie.latest_video_id = None
+    db.flush()
+    for video in videos:
+        db.delete(video)
+    db.flush()
+    db.delete(movie)
+    db.commit()
+
+    for path in paths:
+        _unlink(path)
+    logger.info("deleted movie movie_id=%s videos=%d", movie_id, len(paths))
+    return None

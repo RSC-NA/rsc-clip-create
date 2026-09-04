@@ -1,21 +1,23 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from backend.app.database import get_db
 from backend.app.deps import get_current_user
 from backend.app.config import get_settings
 from backend.app.filename_parser import parse_clip_filename
-from backend.app.models import Clip, Movie, MovieSlot, User
+from backend.app.models import Clip, Movie, MovieSlot, RenderJobClipResult, User
 from backend.app.schemas import ClipResponse
 from backend.app.storage import ProbeError, UploadTooLarge, probe_media, safe_upload_name, save_upload
 
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/clips", tags=["clips"])
 settings = get_settings()
 
@@ -122,3 +124,50 @@ def upload_clips(
 
     db.commit()
     return [_clip_to_response(clip) for clip in saved_clips]
+
+
+@router.delete("/{clip_id}", status_code=204)
+def delete_clip(
+    clip_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Delete a clip and its file.
+
+    A clip is referenced from two places, not one: MovieSlot (the timeline) and
+    RenderJobClipResult (past render diagnostics). Refusing only on the former
+    would still hit the foreign key from the latter, so the historical results
+    are detached instead -- their clipName already falls back to "Deleted clip".
+    """
+    clip = db.scalar(select(Clip).where(Clip.id == clip_id, Clip.user_id == user.id))
+    if clip is None:
+        raise HTTPException(status_code=404, detail="Clip not found.")
+
+    titles = db.scalars(
+        select(Movie.title)
+        .join(MovieSlot, MovieSlot.movie_id == Movie.id)
+        .where(MovieSlot.clip_id == clip.id)
+        .distinct()
+    ).all()
+    if titles:
+        listed = ", ".join(sorted(titles)[:5])
+        raise HTTPException(
+            status_code=409,
+            detail=f"This clip is still used by: {listed}. Remove it from those timelines first.",
+        )
+
+    db.execute(
+        update(RenderJobClipResult)
+        .where(RenderJobClipResult.clip_id == clip.id)
+        .values(clip_id=None)
+    )
+    path = clip.storage_path
+    db.delete(clip)
+    db.commit()
+
+    try:
+        Path(path).unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not remove %s", path, exc_info=True)
+    logger.info("deleted clip clip_id=%s", clip_id)
+    return None
