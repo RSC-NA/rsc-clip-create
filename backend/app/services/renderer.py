@@ -16,9 +16,9 @@ from __future__ import annotations
 import logging
 import subprocess
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from collections.abc import Callable, Sequence
 
 from backend.app.config import get_settings
 from backend.app.filename_parser import ParsedClipName
@@ -382,7 +382,10 @@ def build_chain_command(
 # Entry point
 # --------------------------------------------------------------------------
 def render_movie(
-    clips: Sequence[ClipSpec], output: Path, options: RenderOptions | None = None
+    clips: Sequence[ClipSpec],
+    output: Path,
+    options: RenderOptions | None = None,
+    on_progress: Callable[[], None] | None = None,
 ) -> dict:
     """Normalize every clip, then join them with brand stings.
 
@@ -405,10 +408,14 @@ def render_movie(
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="clip-create-") as temporary:
         workdir = Path(temporary)
-        segments = [
-            normalize_clip(spec, workdir / f"clip-{index:04d}.mp4", workdir, options)
-            for index, spec in enumerate(clips)
-        ]
+        segments = []
+        for index, spec in enumerate(clips):
+            segments.append(
+                normalize_clip(spec, workdir / f"clip-{index:04d}.mp4", workdir, options)
+            )
+            # Pass 1 is the long part; let the caller prove it is still alive.
+            if on_progress is not None:
+                on_progress()
         boundaries = plan_boundaries(segments, options, workdir)
         expected = total_frames(segments, boundaries)
         logger.info(

@@ -52,6 +52,7 @@ export type MovieDetail = MovieSummary & {
   clips: ClipSummary[];
   slots: MovieSlot[];
   transitionStyles: string[];
+  latestJob: RenderJob | null;
 };
 
 export type Logo = {

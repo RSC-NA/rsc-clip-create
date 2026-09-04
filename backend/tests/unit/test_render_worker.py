@@ -43,7 +43,7 @@ def test_success_creates_video_and_accepts_every_clip(db_session):
     _movie_with_clips(db_session, 3)
     captured = {}
 
-    def fake_render(clips, output, options=None):
+    def fake_render(clips, output, options=None, on_progress=None):
         captured["clips"] = clips
         captured["options"] = options
         return {"duration": 46.2, "frames": 1386}
@@ -64,7 +64,7 @@ def test_success_creates_video_and_accepts_every_clip(db_session):
 def test_render_error_marks_job_and_clips_failed(db_session):
     _movie_with_clips(db_session, 2)
 
-    def failing(clips, output, options=None):
+    def failing(clips, output, options=None, on_progress=None):
         raise RenderError("ffmpeg exploded", "overlay")
 
     processed = process_next_job(db_session, renderer=failing)
@@ -87,7 +87,7 @@ def test_clips_missing_metadata_are_rejected_not_rendered(db_session):
 
     called = False
 
-    def fake_render(clips, output, options=None):
+    def fake_render(clips, output, options=None, on_progress=None):
         nonlocal called
         called = True
         return {"duration": 1.0}

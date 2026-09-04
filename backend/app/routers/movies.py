@@ -202,6 +202,18 @@ def get_movie(
     clips = db.scalars(
         select(Clip).where(Clip.user_id == user.id).order_by(Clip.created_at.desc())
     ).all()
+    # Without this the editor is handed initialJob=null and an in-flight render
+    # becomes invisible the moment the page is reloaded.
+    latest_job = db.scalar(
+        select(RenderJob)
+        .where(RenderJob.movie_id == movie.id)
+        .options(
+            selectinload(RenderJob.attempts)
+            .selectinload(RenderJobAttempt.clip_results)
+            .selectinload(RenderJobClipResult.clip)
+        )
+        .order_by(RenderJob.created_at.desc())
+    )
     return MovieDetailResponse(
         id=movie.id,
         title=movie.title,
@@ -214,6 +226,7 @@ def get_movie(
         transitionStyle=_style_of(movie),
         transitionHoldSeconds=_hold_of(movie),
         transitionStyles=sorted(TRANSITION_FAMILIES),
+        latestJob=_job_response(latest_job) if latest_job else None,
     )
 
 

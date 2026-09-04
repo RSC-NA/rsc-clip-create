@@ -4,6 +4,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { browserApiPath } from "@/app/lib/browser-api";
+import { readApiError } from "@/app/lib/api-error";
 import type { Logo } from "@/app/lib/types";
 
 export function LogoLibrary({ logos }: { logos: Logo[] }) {
@@ -29,7 +30,7 @@ export function LogoLibrary({ logos }: { logos: Logo[] }) {
           body,
         });
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw await readApiError(response);
         }
 
         setTeam("");
@@ -51,7 +52,7 @@ export function LogoLibrary({ logos }: { logos: Logo[] }) {
           method: "DELETE",
         });
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw await readApiError(response);
         }
         router.refresh();
       } catch (caught) {

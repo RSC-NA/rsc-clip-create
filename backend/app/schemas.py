@@ -96,6 +96,7 @@ class MovieDetailResponse(MovieSummaryResponse):
     clips: list[ClipResponse]
     slots: list[MovieSlotResponse]
     transitionStyles: list[str]
+    latestJob: "RenderJobResponse | None" = None
 
 
 class RenderClipResultResponse(BaseModel):
@@ -182,3 +183,6 @@ class AdminErrorResponse(BaseModel):
     failedClipCount: int
     createdAt: datetime
     clipResults: list[RenderClipResultResponse]
+
+
+MovieDetailResponse.model_rebuild()

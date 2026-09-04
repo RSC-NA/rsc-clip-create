@@ -10,6 +10,7 @@ import type {
   RenderJob,
 } from "@/app/lib/types";
 import { browserApiPath } from "@/app/lib/browser-api";
+import { readApiError } from "@/app/lib/api-error";
 import { StatusBadge } from "@/app/components/status-badge";
 
 type EditableSlot = MovieSlot;
@@ -30,6 +31,13 @@ function normalizeSlots(slots: EditableSlot[]) {
   }));
 }
 
+function clampHold(raw: string, previous: number) {
+  if (raw.trim() === "") return previous;
+  const value = Number(raw);
+  if (Number.isNaN(value)) return previous;
+  return Math.min(3, Math.max(0, value));
+}
+
 const STYLE_BLURB: Record<string, string> = {
   sweep: "Wipes and slides. The brand card travels the way the cut does.",
   slice: "Hard-edged slices and diagonals.",
@@ -48,6 +56,7 @@ export function TimelineEditor({
   transitionHoldSeconds,
   transitionStyles,
   logoTeams,
+  minClipCount,
 }: {
   movieId: string;
   initialSlots: MovieSlot[];
@@ -57,6 +66,7 @@ export function TimelineEditor({
   transitionHoldSeconds: number;
   transitionStyles: string[];
   logoTeams: string[];
+  minClipCount: number;
 }) {
   const router = useRouter();
   const [slots, setSlots] = useState<EditableSlot[]>(
@@ -67,6 +77,7 @@ export function TimelineEditor({
   const [style, setStyle] = useState(transitionStyle);
   const [hold, setHold] = useState(transitionHoldSeconds);
   const [job, setJob] = useState(initialJob);
+  const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
@@ -87,13 +98,22 @@ export function TimelineEditor({
     return () => window.clearInterval(timer);
   }, [jobId, jobStatus]);
 
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+
   function updateSlot(slotId: string, patch: Partial<EditableSlot>) {
+    setDirty(true);
     setSlots((current) =>
       current.map((slot) => (slot.id === slotId ? { ...slot, ...patch } : slot)),
     );
   }
 
   function insertSlot(index: number) {
+    setDirty(true);
     setSlots((current) =>
       normalizeSlots([
         ...current.slice(0, index),
@@ -104,16 +124,19 @@ export function TimelineEditor({
   }
 
   function appendSlot() {
+    setDirty(true);
     setSlots((current) =>
       normalizeSlots([...current, createEmptySlot(current.length)]),
     );
   }
 
   function removeSlot(slotId: string) {
+    setDirty(true);
     setSlots((current) => normalizeSlots(current.filter((slot) => slot.id !== slotId)));
   }
 
   function moveSlot(slotId: string, direction: -1 | 1) {
+    setDirty(true);
     setSlots((current) => {
       const index = current.findIndex((slot) => slot.id === slotId);
       const target = index + direction;
@@ -146,7 +169,7 @@ export function TimelineEditor({
         });
 
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw await readApiError(response);
         }
 
         // The server mints its own slot ids. Without adopting them, this
@@ -155,6 +178,9 @@ export function TimelineEditor({
         // this one -- and the next save creates duplicate slots.
         const saved = (await response.json()) as MovieDetail;
         setSlots(normalizeSlots(saved.slots));
+        setStyle(saved.transitionStyle);
+        setHold(saved.transitionHoldSeconds);
+        setDirty(false);
         router.refresh();
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : "Failed to save timeline.");
@@ -171,7 +197,7 @@ export function TimelineEditor({
         });
 
         if (!response.ok) {
-          throw new Error(await response.text());
+          throw await readApiError(response);
         }
 
         const payload = (await response.json()) as RenderJob;
@@ -335,7 +361,7 @@ export function TimelineEditor({
             <label htmlFor="transition-style">Style</label>
             <select
               id="transition-style"
-              onChange={(event) => setStyle(event.target.value)}
+              onChange={(event) => { setDirty(true); setStyle(event.target.value); }}
               value={style}
             >
               {transitionStyles.map((option) => (
@@ -353,7 +379,7 @@ export function TimelineEditor({
               id="transition-hold"
               max={3}
               min={0}
-              onChange={(event) => setHold(Number(event.target.value))}
+              onChange={(event) => { setDirty(true); setHold(clampHold(event.target.value, hold)); }}
               step={0.1}
               type="number"
               value={hold}
@@ -375,14 +401,19 @@ export function TimelineEditor({
               Queue FFmpeg rendering and inspect clip-level failures from the latest run.
             </p>
           </div>
-          <button
-            className="button button-primary"
-            disabled={isPending || filledSlots < 2}
-            onClick={queueRender}
-            type="button"
-          >
-            Queue Render
-          </button>
+          <div className="stack-sm">
+            <button
+              className="button button-primary"
+              disabled={isPending || filledSlots < minClipCount || dirty}
+              onClick={queueRender}
+              type="button"
+            >
+              Queue Render
+            </button>
+            {dirty ? (
+              <p className="text-soft">Save the timeline before rendering.</p>
+            ) : null}
+          </div>
         </div>
 
         {error ? <p className="badge" data-tone="danger">{error}</p> : null}

@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { browserApiPath } from "@/app/lib/browser-api";
+import { readApiError } from "@/app/lib/api-error";
 import type { ClientConfig } from "@/app/lib/types";
 
 export function CreateMovieForm({ config }: { config: ClientConfig }) {
@@ -60,7 +61,7 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           body: formData,
         });
         if (!uploadResponse.ok) {
-          throw new Error(await uploadResponse.text());
+          throw await readApiError(uploadResponse);
         }
         const clips = (await uploadResponse.json()) as { id: string }[];
 
@@ -70,7 +71,7 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           body: JSON.stringify({ title }),
         });
         if (!createResponse.ok) {
-          throw new Error(await createResponse.text());
+          throw await readApiError(createResponse);
         }
         const movie = (await createResponse.json()) as { id: string };
 
@@ -90,7 +91,7 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           },
         );
         if (!timelineResponse.ok) {
-          throw new Error(await timelineResponse.text());
+          throw await readApiError(timelineResponse);
         }
 
         router.push(`/movies/${movie.id}/edit`);

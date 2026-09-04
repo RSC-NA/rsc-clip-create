@@ -107,10 +107,13 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         )
         db.add(result)
         selected.append((slot, clip, result))
-    db.flush()
 
     started = datetime.now(timezone.utc)
     try:
+        # Inside the try: status="running" was already committed at claim time,
+        # so anything escaping from here leaves the job wedged in "running"
+        # forever while the editor polls it.
+        db.flush()
         if len(selected) < settings.min_clip_count:
             raise RenderError(
                 f"At least {settings.min_clip_count} valid clips are required.", "input"
@@ -142,6 +145,21 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             blue=settings.render_brand_blue,
             orange=settings.render_brand_orange,
         )
+        def touch_heartbeat() -> None:
+            # heartbeat_at was written once at claim time and never again, so a
+            # render legitimately longer than the stale threshold was declared
+            # dead *while running* and a second worker picked it up.
+            try:
+                db.execute(
+                    update(RenderJob)
+                    .where(RenderJob.id == job.id)
+                    .values(heartbeat_at=datetime.now(timezone.utc))
+                )
+                db.commit()
+            except Exception:
+                logger.warning("heartbeat update failed job_id=%s", job.id, exc_info=True)
+                db.rollback()
+
         media = render(
             [
                 ClipSpec(
@@ -155,6 +173,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             ],
             destination,
             options,
+            on_progress=touch_heartbeat,
         )
 
         for _, _, result in selected:
@@ -198,8 +217,29 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         _set_failure(job, attempt, str(exc), "worker")
         movie.status = "failed"
 
-    db.commit()
+    try:
+        db.commit()
+    except Exception:
+        # The render may have produced a file, but we could not record it.
+        # Leaving the row at "running" would strand the job, so fail it in a
+        # fresh transaction rather than letting the exception escape.
+        logger.exception("could not record render outcome job_id=%s", job.id)
+        db.rollback()
+        _force_fail(db, job.id, "The render outcome could not be recorded.")
     return job
+
+
+def _force_fail(db: Session, job_id: str, message: str) -> None:
+    try:
+        db.execute(
+            update(RenderJob)
+            .where(RenderJob.id == job_id)
+            .values(status="failed", final_status_reason=message[:500])
+        )
+        db.commit()
+    except Exception:
+        logger.exception("could not mark job failed job_id=%s", job_id)
+        db.rollback()
 
 
 def requeue_stale_jobs(db: Session, *, timeout_seconds: int | None = None) -> int:
@@ -222,10 +262,21 @@ def requeue_stale_jobs(db: Session, *, timeout_seconds: int | None = None) -> in
             beat = beat.replace(tzinfo=timezone.utc)
         if beat is not None and beat > cutoff:
             continue
-        job.status = "queued"
-        job.final_status_reason = "Requeued after the previous worker stopped responding."
-        requeued += 1
-        logger.warning("requeued stale render job job_id=%s", job.id)
+        # Guarded UPDATE, not an ORM mutation: a job that finished between the
+        # SELECT above and this write must not be knocked back to "queued".
+        result = db.execute(
+            update(RenderJob)
+            .where(RenderJob.id == job.id, RenderJob.status == "running")
+            .values(
+                status="queued",
+                final_status_reason="Requeued after the previous worker stopped responding.",
+            )
+        )
+        if result.rowcount == 1:
+            requeued += 1
+            logger.warning("requeued stale render job job_id=%s", job.id)
     if requeued:
         db.commit()
+    else:
+        db.rollback()
     return requeued

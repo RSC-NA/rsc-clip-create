@@ -260,3 +260,22 @@ def test_reordering_existing_slots_updates_in_place(client, make_movie, make_cli
     assert [s["clipId"] for s in slots] == [second.id, first.id]
     # Reordering reuses the rows rather than churning ids.
     assert {s["id"] for s in slots} == {created[0]["id"], created[1]["id"]}
+
+
+def test_movie_detail_exposes_an_in_flight_job(client, make_movie, make_clip):
+    """Regression: the edit page hardcoded initialJob=null and getJob() was
+    imported by nothing, so reloading during a render showed "no render has
+    been queued" and the job became unobservable."""
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    movie = make_movie(clips=clips)
+    queued = client.post(f"/api/v1/movies/{movie.id}/render").json()
+
+    detail = client.get(f"/api/v1/movies/{movie.id}").json()
+
+    assert detail["latestJob"] is not None
+    assert detail["latestJob"]["id"] == queued["id"]
+    assert detail["latestJob"]["status"] == "queued"
+
+
+def test_movie_detail_has_no_job_before_the_first_render(client, make_movie):
+    assert client.get(f"/api/v1/movies/{make_movie().id}").json()["latestJob"] is None
