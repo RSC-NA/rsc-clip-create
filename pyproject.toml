@@ -2,7 +2,9 @@
 # Lets `pytest` run from the repo root without PYTHONPATH=. every time.
 pythonpath = ["."]
 testpaths = ["backend/tests"]
-addopts = "-q --strict-markers"
+# Integration tests shell out to ffmpeg and take ~30s; opt in with
+#   pytest -m integration      (or -m "" for everything)
+addopts = "-q --strict-markers -m 'not integration'"
 markers = [
     "integration: exercises real ffmpeg; skipped when ffmpeg is unavailable",
 ]

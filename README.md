@@ -194,15 +194,43 @@ npm run dev:backend
 ## Verification
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m pytest backend/tests -q
-npm run typecheck
-npm run lint
+pytest                    # fast suite: unit + API (~2s)
+pytest -m integration     # real ffmpeg renders (~50s)
+pytest -m ""              # everything
+npm run typecheck && npm run lint && npm run build
 ```
 
-The pytest suite covers the Discord auth helpers, the filename parser, the render worker's
-success/failure/rejection paths, the job lifecycle, the transition arithmetic (offsets are
-asserted against hand-worked frame numbers), and the brand decisions including
-reproducibility across processes with different `PYTHONHASHSEED`.
+`pytest` runs from the repo root with no `PYTHONPATH` (see `pyproject.toml`), and
+integration tests are deselected by default because they shell out to ffmpeg.
+
+The suite covers the Discord auth helpers, the filename parser, brand decisions
+(including reproducibility across processes with different `PYTHONHASHSEED`), the
+transition arithmetic asserted against hand-worked frame numbers, every HTTP endpoint
+(auth, ownership, validation, 404/409/422), deletion ordering against enforced foreign
+keys, and real ffmpeg renders.
+
+Tests run on SQLite with `PRAGMA foreign_keys=ON`, because production is MySQL and a
+constraint bug that passes on an unenforced fixture is worse than no test at all.
+
+## Testing with your own footage
+
+Drop clips named `team-player-tier.ext` into `backend/tests/fixtures/samples/` and run:
+
+```bash
+pytest -m integration
+```
+
+That renders them and writes `test-output/samples/` for inspection:
+
+- `render.mp4` — the finished reel
+- `frames/clip-N.png` — the middle of each clip, to check the label and logo
+- `frames/sting-N.png` — the middle of each transition, to check colour and direction
+- `report.html` — the computed plan side by side with the measured result
+- `summary.json` — the same, machine-readable
+
+The sample tests skip cleanly when that directory is empty, so the suite stays green
+until footage is added. Cover both label layouts by giving one team a logo and leaving
+another without one — the harness does this automatically for the first team it finds.
 
 ## Still to do
 

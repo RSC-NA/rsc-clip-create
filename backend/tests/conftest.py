@@ -110,16 +110,46 @@ def admin_user(db_session) -> User:
     return record
 
 
+class _IdentityClient(TestClient):
+    """A TestClient that binds its own identity on every request.
+
+    dependency_overrides is global to the app, so two client fixtures in one
+    test would otherwise fight over it and the last one created would win --
+    silently authenticating both as the same user.
+    """
+
+    identity = None
+
+    def request(self, *args, **kwargs):
+        _ACTIVE_USER["current"] = self.identity
+        return super().request(*args, **kwargs)
+
+
+_ACTIVE_USER: dict[str, object] = {"current": None}
+
+
+def _resolve_active_user():
+    user = _ACTIVE_USER["current"]
+    if user is None:  # pragma: no cover - anon_client uses the real dependency
+        raise RuntimeError("no active test user")
+    return user
+
+
 def _client_for(db_session, current_user) -> Generator[TestClient, None, None]:
     # No `with` block: entering the context manager would run lifespan, which
     # calls create_all against the real (MySQL) engine.
     app.dependency_overrides[get_db] = lambda: db_session
     if current_user is not None:
-        app.dependency_overrides[get_current_user] = lambda: current_user
+        app.dependency_overrides[get_current_user] = _resolve_active_user
+
+    client = _IdentityClient(app, raise_server_exceptions=False)
+    client.identity = current_user
     try:
-        yield TestClient(app, raise_server_exceptions=False)
+        yield client
     finally:
-        app.dependency_overrides.clear()
+        app.dependency_overrides.pop(get_db, None)
+        app.dependency_overrides.pop(get_current_user, None)
+        _ACTIVE_USER["current"] = None
 
 
 @pytest.fixture
