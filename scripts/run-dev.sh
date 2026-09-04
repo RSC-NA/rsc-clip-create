@@ -53,6 +53,22 @@ echo "Starting MySQL..."
 docker compose up -d mysql
 MYSQL_STARTED="true"
 
+# `up -d` returns when the container starts, not when MySQL accepts
+# connections. On a first run the data directory takes 10-40s to initialise,
+# and the backend's create_all would be refused, killing uvicorn and taking
+# the whole script down with it.
+echo "Waiting for MySQL to accept connections..."
+MYSQL_READY="false"
+for _ in $(seq 1 60); do
+  if docker compose exec -T mysql mysqladmin ping -h 127.0.0.1 -uroot -proot >/dev/null 2>&1; then
+    MYSQL_READY="true"
+    break
+  fi
+  sleep 2
+done
+[[ "$MYSQL_READY" == "true" ]] || fail "MySQL did not become ready in time. Check: docker compose logs mysql"
+echo "MySQL is ready."
+
 echo "Starting FastAPI backend on http://127.0.0.1:8000..."
 PYTHONPATH="$ROOT_DIR" "$ROOT_DIR/.venv/bin/python" -m uvicorn backend.app.main:app --reload --host 0.0.0.0 --port 8000 &
 BACKEND_PID=$!

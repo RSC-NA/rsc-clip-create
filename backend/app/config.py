@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     render_font_size: int = 42
     render_logo_max_width: int = 260
     max_logo_size_bytes: int = 5242880
+    max_logo_dimension: int = 4000
 
     # Encoding
     render_intermediate_crf: int = 16

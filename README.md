@@ -232,14 +232,31 @@ The sample tests skip cleanly when that directory is empty, so the suite stays g
 until footage is added. Cover both label layouts by giving one team a logo and leaving
 another without one — the harness does this automatically for the first team it finds.
 
+## Maintenance
+
+Hard deletion unlinks files after committing the row, and a killed render can leave
+bytes behind, so storage and the database can drift. Reconcile them with:
+
+```bash
+python -m backend.app.maintenance audit        # report
+python -m backend.app.maintenance audit --fix  # delete orphaned files
+```
+
+Rows pointing at missing files are reported but never repaired automatically —
+removing them would discard render history.
+
 ## Still to do
 
 - Admin endpoints have no pagination and issue per-row queries
 - Schema changes go through a hand-rolled `ensure_media_columns` rather than Alembic
-- No DELETE endpoints for movies, clips, or videos (logos excepted)
 - Removing an ID from `ADMIN_DISCORD_IDS` does not revoke an existing admin
 - Expired session rows are never reaped
-- Raw backend error bodies are rendered into the UI
-- No CI workflow and no `npm test` script
+- No CI workflow
 - The join pass opens `2n-1` inputs at once, so movies above
-  `RENDER_MAX_GRAPH_INPUTS` (24) are rejected rather than rendered in chunks
+  `RENDER_MAX_GRAPH_INPUTS` (24) are refused at queue time rather than rendered in
+  chunks
+- The clip picker is a plain dropdown of the whole library, with no search
+- Uploads have no progress indicator (`fetch` cannot report it; needs XHR)
+- `latestVideo.downloadUrl` is absolute to `FASTAPI_PUBLIC_URL` rather than going
+  through the `/api/backend` rewrite, so inline playback will break once the frontend
+  and backend are on different hosts

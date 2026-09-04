@@ -46,10 +46,12 @@ class LogoResponse(BaseModel):
 
 
 class MovieSlotPayload(BaseModel):
-    id: str | None = None
-    sort_index: int
-    clip_id: str | None = None
-    overlay_text: str = ""
+    id: str | None = Field(default=None, max_length=36)
+    # Bounded so an out-of-range value is a 422 rather than a MySQL INTEGER
+    # overflow surfacing as a 500.
+    sort_index: int = Field(ge=0, le=10_000)
+    clip_id: str | None = Field(default=None, max_length=36)
+    overlay_text: str = Field(default="", max_length=2000)
 
 
 class MovieCreateRequest(BaseModel):
@@ -57,7 +59,7 @@ class MovieCreateRequest(BaseModel):
 
 
 class MovieTimelineUpdateRequest(BaseModel):
-    slots: list[MovieSlotPayload]
+    slots: list[MovieSlotPayload] = Field(default_factory=list, max_length=500)
     transition_style: str | None = None
     transition_hold_seconds: float | None = Field(default=None, ge=0, le=3)
 

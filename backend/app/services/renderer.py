@@ -14,6 +14,7 @@ samples, so a frame-based plan is simultaneously exact for both streams.
 from __future__ import annotations
 
 import logging
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -423,7 +424,15 @@ def render_movie(
             len(segments), sum(0 if b.hard_cut else 1 for b in boundaries),
             expected, expected / options.fps,
         )
-        _run(build_chain_command(segments, boundaries, output, options), "concat")
+        # Render to a scratch path and move into place only on success, so a
+        # killed or timed-out ffmpeg does not leave a truncated MP4 that no
+        # Video row references and nothing ever cleans up.
+        scratch = workdir / "output.mp4"
+        _run(build_chain_command(segments, boundaries, scratch, options), "concat")
+        if not scratch.exists() or scratch.stat().st_size == 0:
+            raise RenderError("FFmpeg did not produce an output file.", "verify")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(scratch), str(output))
 
     if not output.exists() or output.stat().st_size == 0:
         raise RenderError("FFmpeg did not produce an output file.", "verify")

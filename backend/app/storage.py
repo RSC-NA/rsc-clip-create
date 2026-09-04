@@ -133,7 +133,9 @@ def probe_media(path: Path, *, strict: bool = False) -> dict:
     except (
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
-        FileNotFoundError,
+        # OSError covers ENOMEM/EAGAIN on fork under load and EACCES; without
+        # it a probe failure escaped as a 500 on upload.
+        OSError,
         ValueError,
         json.JSONDecodeError,
     ) as exc:

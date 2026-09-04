@@ -337,6 +337,16 @@ def queue_render(
     selected_slots = [slot for slot in sorted(movie.slots, key=lambda value: value.sort_index) if slot.clip_id]
     if len(selected_slots) < settings.min_clip_count:
         raise HTTPException(status_code=400, detail=f"Select at least {settings.min_clip_count} clips before rendering.")
+    if len(selected_slots) > settings.render_max_graph_inputs:
+        # The worker enforces this too, but discovering it after queueing means
+        # the user waits for a render that was never going to run.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"This movie has {len(selected_slots)} clips; the renderer joins at most "
+                f"{settings.render_max_graph_inputs} in one pass."
+            ),
+        )
     clips = [db.get(Clip, slot.clip_id) for slot in selected_slots]
     if any(clip is None or not clip.team or not clip.player or not clip.tier for clip in clips):
         raise HTTPException(status_code=400, detail="Every selected clip must have valid filename metadata.")

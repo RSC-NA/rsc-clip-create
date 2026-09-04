@@ -73,10 +73,22 @@ def upload_logo(
     try:
         with Image.open(destination) as probe:
             image_format = probe.format
+            width, height = probe.size
             probe.verify()
     except (OSError, UnidentifiedImageError, Image.DecompressionBombError) as exc:
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="That file is not a readable image.") from exc
+
+    # Pillow's decompression-bomb guard only trips above ~178M pixels. A
+    # 13000x13000 PNG sails under it at a few tens of KB on disk and then
+    # decodes to hundreds of MB of RGBA per copy inside the render worker.
+    limit = settings.max_logo_dimension
+    if width > limit or height > limit:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Logo is {width}x{height}; the maximum is {limit}x{limit}.",
+        )
 
     if image_format not in SUPPORTED_LOGO_FORMATS:
         destination.unlink(missing_ok=True)

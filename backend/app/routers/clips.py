@@ -94,7 +94,11 @@ def upload_clips(
             raise _abort(f"Clip {file.filename} has no video stream.")
 
         duration = media.get("duration")
-        if duration is not None and duration > settings.max_clip_duration_seconds:
+        if duration is None or duration <= 0:
+            # Accepting this defers the failure to render time, where it kills
+            # the whole movie instead of one upload.
+            raise _abort(f"Clip {file.filename} has no readable duration.")
+        if duration > settings.max_clip_duration_seconds:
             raise _abort(
                 f"Clip {file.filename} exceeds the "
                 f"{settings.max_clip_duration_seconds:g} second limit."
