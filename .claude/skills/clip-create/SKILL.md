@@ -96,12 +96,25 @@ duplicated in `app/components/create-movie-form.tsx` and the two copies **do not
 ## Verify with
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m pytest backend/tests -q   # 9 tests
-npx tsc --noEmit
-npx eslint
+pytest                    # fast: unit + API, ~2s
+pytest -m integration     # real ffmpeg, ~50s
+pytest -m ""              # everything
+npx tsc --noEmit && npx eslint && npm run build
 ```
 
-All three are green as of this writing. There is no `npm test` script and no CI.
+`pyproject.toml` sets `pythonpath`, so no `PYTHONPATH=.` is needed, and integration
+tests are deselected by default.
+
+**Two things in `conftest.py` are load-bearing.** `PRAGMA foreign_keys=ON` -- SQLite
+leaves enforcement off, and a constraint bug that passes on an unenforced fixture is
+worse than no test. And `check_same_thread=False` **with** `StaticPool`, because
+TestClient serves requests on a different thread than the test body. `TestClient(app)`
+is deliberately not used as a context manager: entering it runs `lifespan`, which calls
+`create_all` against the real MySQL engine.
+
+To render real footage, drop clips named `team-player-tier.ext` into
+`backend/tests/fixtures/samples/` and run `pytest -m integration`; it writes
+`test-output/samples/report.html` with frames from the middle of every clip and sting.
 
 ## Render pipeline (read before touching renderer.py)
 
@@ -147,15 +160,37 @@ must never fail a render.
 ## Known issues -- check before "fixing" something that looks intentional
 
 - Admin endpoints have no pagination and issue per-row queries.
-- Schema changes go through `migrations.ensure_media_columns`, a hand-rolled idempotent
-  `ALTER TABLE ADD COLUMN` helper, not Alembic. New tables come from `create_all`.
-- No DELETE endpoints for movies, clips, or videos (logos excepted).
+- Schema changes go through `migrations.ensure_media_columns` /
+  `ensure_nullable_columns` / `ensure_foreign_key_actions` -- hand-rolled idempotent
+  helpers, not Alembic. New tables come from `create_all`.
 - Removing an ID from `ADMIN_DISCORD_IDS` does not revoke an existing admin
-  (`upsert_discord_user` uses `is_admin or ...`).
-- Expired `SessionRecord` rows are never reaped; `SameSite=lax` is the only CSRF defence.
-- Both client components render raw FastAPI error bodies into the UI.
-- The join pass opens `2n-1` inputs at once, so movies above `render_max_graph_inputs`
-  (24) are rejected with a clear error rather than rendered in chunks.
-- `_video_summary().downloadUrl` uses `fastapi_public_url` directly rather than the
-  `/api/backend` rewrite, so playback cookies will break once the frontend and backend are
-  on different domains.
+  (`upsert_discord_user` uses `is_admin or ...`). Expired sessions are never reaped.
+- `SameSite=lax` is the only CSRF defence.
+- The join pass opens `2n-1` inputs at once, so movies above
+  `render_max_graph_inputs` (24) are refused at queue time rather than chunked. The
+  limit is file descriptors and decoders, not argv length -- the graph is ~17KB against
+  an `ARG_MAX` of 1MB.
+- `_video_summary().downloadUrl` is absolute to `fastapi_public_url` rather than the
+  `/api/backend` rewrite, so inline playback breaks once frontend and backend are on
+  different hosts. `logo-library.tsx` does it correctly; that page is the outlier.
+- Uploads have no progress indicator; `fetch` cannot report it, so this needs XHR.
+- The local `backend/.env` ships `AUTH_ENABLED=false` with `AUTH_BYPASS_ADMIN=true`.
+  It is gitignored, but it means every unauthenticated request resolves to one shared
+  admin user locally. Test fixtures pin auth explicitly rather than inheriting it.
+
+## Traps that have already bitten
+
+Each of these was a real bug; the pattern matters more than the instance.
+
+- **Python regex handed to `new RegExp`.** `(?P<name>)` is Python-only; JS uses
+  `(?<name>)`. Serving `FILENAME_RE.pattern` to the browser crashed `/movies/new` on
+  render, and neither `tsc` nor `eslint` catches it. `CLIENT_FILENAME_PATTERN` exists
+  for this; a test compiles it under Node.
+- **`Path(f"{uuid}-{filename}").name`** collapses to the basename when the filename
+  contains a separator, discarding the uniqueness prefix. Use `safe_upload_name`.
+- **Flushing a model before its NOT NULL columns are set.** `MovieSlot.sort_index`.
+- **Deleting a row something else references.** There is almost no `ondelete` in
+  `models.py`; cascades are ORM-level only. See the unwind orders in the delete
+  handlers, and note a clip is referenced from *two* tables, not one.
+- **`useState` seeded from props never re-syncs** after `router.refresh()`, which
+  re-renders the Server Component without remounting the client one.

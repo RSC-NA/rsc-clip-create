@@ -51,12 +51,12 @@ export default async function MoviesPage() {
         <table>
           <thead>
             <tr>
-              <th>Movie</th>
-              <th>Status</th>
-              <th>Slots</th>
-              <th>Latest Output</th>
-              <th>Updated</th>
-              <th />
+              <th scope="col">Movie</th>
+              <th scope="col">Status</th>
+              <th scope="col">Slots</th>
+              <th scope="col">Latest Output</th>
+              <th scope="col">Updated</th>
+              <th scope="col"><span className="sr-only">Actions</span></th>
             </tr>
           </thead>
           <tbody>

@@ -122,10 +122,10 @@ export function LogoLibrary({ logos }: { logos: Logo[] }) {
           <table>
             <thead>
               <tr>
-                <th>Team</th>
-                <th>Logo</th>
-                <th>File</th>
-                <th />
+                <th scope="col">Team</th>
+                <th scope="col">Logo</th>
+                <th scope="col">File</th>
+                <th scope="col"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody>

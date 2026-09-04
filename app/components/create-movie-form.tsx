@@ -136,7 +136,7 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
       </div>
 
       {error ? (
-        <p className="badge" data-tone="danger">
+        <p className="form-error" role="alert">
           {error}
         </p>
       ) : null}

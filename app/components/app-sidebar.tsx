@@ -47,7 +47,9 @@ export function AppSidebar({
             </div>
           ) : null}
           <button
-            aria-label="Toggle sidebar"
+            aria-controls="sidebar-nav"
+            aria-expanded={!collapsed}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
             className="sidebar-toggle"
             onClick={() => setCollapsed((value) => !value)}
             type="button"
@@ -56,7 +58,7 @@ export function AppSidebar({
           </button>
         </div>
 
-        <nav className="nav-list">
+        <nav className="nav-list" id="sidebar-nav">
           {items.map((item) => {
             const active =
               pathname === item.href || pathname.startsWith(`${item.href}/`);
@@ -68,10 +70,10 @@ export function AppSidebar({
                 href={item.href}
                 key={item.href}
               >
-                <span className="mono-label">
-                  {collapsed ? item.shortLabel : item.shortLabel}
+                <span aria-hidden="true" className="mono-label">
+                  {item.shortLabel}
                 </span>
-                {!collapsed ? <span>{item.label}</span> : null}
+                <span className={collapsed ? "sr-only" : undefined}>{item.label}</span>
               </Link>
             );
           })}

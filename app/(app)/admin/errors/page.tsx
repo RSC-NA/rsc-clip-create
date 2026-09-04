@@ -15,6 +15,12 @@ export default async function AdminErrorsPage() {
         title="Render Diagnostics"
       />
 
+      {errors.length === 0 ? (
+        <div className="empty-state">
+          No render failures recorded. Nothing to diagnose.
+        </div>
+      ) : null}
+
       <div className="detail-list">
         {errors.map((error) => (
           <article key={`${error.jobId}-${error.attemptNumber}`}>

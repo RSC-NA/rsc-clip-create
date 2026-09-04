@@ -31,6 +31,15 @@ function normalizeSlots(slots: EditableSlot[]) {
   }));
 }
 
+function describeClip(clip: ClipSummary) {
+  // The dropdown showed only the filename, though ClipSummary already carries
+  // the parsed metadata and duration.
+  const parts = [clip.team, clip.player, clip.tier].filter(Boolean).join(" / ");
+  const seconds =
+    clip.durationSeconds != null ? ` · ${clip.durationSeconds.toFixed(1)}s` : "";
+  return parts ? `${parts}${seconds}` : clip.name;
+}
+
 function clampHold(raw: string, previous: number) {
   if (raw.trim() === "") return previous;
   const value = Number(raw);
@@ -297,11 +306,17 @@ export function TimelineEditor({
                     value={slot.clipId ?? ""}
                   >
                     <option value="">Choose a clip</option>
-                    {availableClips.map((clip) => (
-                      <option key={clip.id} value={clip.id}>
-                        {clip.name}
-                      </option>
-                    ))}
+                    {availableClips.map((clip) => {
+                      const usedElsewhere = slots.some(
+                        (other) => other.id !== slot.id && other.clipId === clip.id,
+                      );
+                      return (
+                        <option key={clip.id} value={clip.id}>
+                          {describeClip(clip)}
+                          {usedElsewhere ? " — already used" : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 </div>
                 {slot.clipId ? (() => {
@@ -416,7 +431,7 @@ export function TimelineEditor({
           </div>
         </div>
 
-        {error ? <p className="badge" data-tone="danger">{error}</p> : null}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
 
         {job ? (
           <div className="stack-md">

@@ -464,3 +464,50 @@ video {
     width: 100% !important;
   }
 }
+
+/* Accessibility -------------------------------------------------------- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* The browser default outline is invisible against the pill buttons. */
+:focus-visible {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .button:hover {
+    transform: none;
+  }
+}
+
+/* Error text is prose, not a status pill: a .badge uppercases it and refuses
+   to wrap, which made backend messages unreadable. */
+.form-error {
+  border-left: 3px solid var(--danger);
+  background: rgba(164, 55, 41, 0.08);
+  border-radius: 6px;
+  padding: 0.6rem 0.8rem;
+  color: var(--danger);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}

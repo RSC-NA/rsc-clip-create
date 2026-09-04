@@ -16,15 +16,18 @@ export default async function AdminUsersPage() {
       />
 
       <section className="table-card">
+        {users.length === 0 ? (
+          <div className="empty-state">No users have signed in yet.</div>
+        ) : (
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Discord</th>
-              <th>Admin</th>
-              <th>Movies</th>
-              <th>Videos</th>
-              <th>Last Sign In</th>
+              <th scope="col">Name</th>
+              <th scope="col">Discord</th>
+              <th scope="col">Admin</th>
+              <th scope="col">Movies</th>
+              <th scope="col">Videos</th>
+              <th scope="col">Last Sign In</th>
             </tr>
           </thead>
           <tbody>
@@ -36,7 +39,7 @@ export default async function AdminUsersPage() {
                 </td>
                 <td>{user.discordUsername ?? "Unknown"}</td>
                 <td>
-                  <StatusBadge value={user.isAdmin ? "active" : "pending"} />
+                  {user.isAdmin ? <StatusBadge value="active" /> : <span className="text-soft">No</span>}
                 </td>
                 <td>{user.movieCount}</td>
                 <td>{user.videoCount}</td>
@@ -49,6 +52,7 @@ export default async function AdminUsersPage() {
             ))}
           </tbody>
         </table>
+        )}
       </section>
     </main>
   );
