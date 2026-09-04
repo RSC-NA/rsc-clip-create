@@ -70,6 +70,7 @@ export type ClientConfig = {
   minClipCount: number;
   maxClipCount: number;
   maxClipSizeBytes: number;
+  maxUploadBytes: number;
   maxClipDurationSeconds: number;
 };
 

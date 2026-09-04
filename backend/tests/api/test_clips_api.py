@@ -137,3 +137,31 @@ def test_uploading_with_a_movie_id_attaches_slots(client, make_media, make_movie
 
     assert response.status_code == 200
     assert db_session.query(MovieSlot).filter_by(movie_id=movie.id).count() == 1
+
+
+def test_an_over_budget_request_is_rejected_before_anything_is_written(
+    client, db_session, isolated_storage, monkeypatch
+):
+    """Regression: the whole multipart body is buffered by the Next proxy before
+    the API sees it. With the proxy capped at 10MB and the API advertising a
+    500MB per-clip limit, a routine upload was truncated mid-body and the
+    upstream connection reset, with no usable error anywhere."""
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(clips_router.settings, "max_upload_bytes", 1000)
+
+    response = client.post(
+        "/api/v1/clips",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"x" * 5000, "video/mp4"))],
+    )
+
+    assert response.status_code == 413
+    assert "limit is" in response.json()["detail"]
+    assert db_session.query(Clip).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_the_advertised_upload_budget_is_at_least_one_clip(client):
+    """A per-clip limit above the per-request budget would be unusable."""
+    body = client.get("/api/v1/config").json()
+    assert body["maxUploadBytes"] >= body["maxClipSizeBytes"]

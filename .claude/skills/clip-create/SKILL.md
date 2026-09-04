@@ -204,6 +204,10 @@ Each of these was a real bug; the pattern matters more than the instance.
   reading `1/0`; ffmpeg 8 tolerates it. Every branch feeding `xfade` re-asserts `fps`
   *after* `setpts`. Development is on 8.x and the container ships 7.x, so verify filter
   changes against both.
+- **Next buffers the entire proxied request body, rewrites included**, capped at 10MB
+  by default. This is not exclusive to `proxy.ts` -- assuming otherwise cost a working
+  upload path. `MAX_UPLOAD_BYTES` is one budget shared by `proxyClientMaxBodySize`
+  (build time), the API's 413, and the browser's pre-flight total check.
 - **`rewrites()` is evaluated at `next build`**, not at runtime, and serialised into
   `routes-manifest.json`. The backend origin is a `BACKEND_ORIGIN` build arg. A
   `proxy.ts` would be runtime-configurable but buffers the request body (10MB default),

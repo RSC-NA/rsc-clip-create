@@ -4,7 +4,7 @@ import logging
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -48,11 +48,27 @@ def list_clips(
 
 @router.post("", response_model=list[ClipResponse])
 def upload_clips(
+    request: Request,
     files: list[UploadFile] = File(...),
     movie_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    # Checked against the whole request, not per file: the upload arrives
+    # through Next's rewrite, which buffers the entire body in memory before
+    # this handler runs. Exceeding the proxy's own limit truncates the body and
+    # the upstream connection resets, which surfaces as an opaque failure.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > settings.max_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"That upload is {int(declared) / 1e6:.0f} MB; the limit is "
+                f"{settings.max_upload_bytes / 1e6:.0f} MB per request. "
+                "Upload fewer clips at a time."
+            ),
+        )
+
     if not files:
         raise HTTPException(status_code=400, detail="Select at least one clip to upload.")
     if len(files) > settings.max_clip_count:

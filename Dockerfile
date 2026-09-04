@@ -16,6 +16,11 @@ COPY . .
 # runtime. See the comment in next.config.ts.
 ARG BACKEND_ORIGIN=http://api:8000
 ENV FASTAPI_PUBLIC_URL=$BACKEND_ORIGIN
+
+# Next buffers the whole proxied request body (10MB by default), so this has to
+# match the API's MAX_UPLOAD_BYTES or uploads truncate and the socket resets.
+ARG MAX_UPLOAD_BYTES=536870912
+ENV MAX_UPLOAD_BYTES=$MAX_UPLOAD_BYTES
 ENV NEXT_TELEMETRY_DISABLED=1
 
 RUN npm run build

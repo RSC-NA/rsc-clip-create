@@ -19,6 +19,7 @@ class ClientConfigResponse(BaseModel):
     minClipCount: int
     maxClipCount: int
     maxClipSizeBytes: int
+    maxUploadBytes: int
     maxClipDurationSeconds: float
 
 

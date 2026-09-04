@@ -182,6 +182,27 @@ Every value has a working default. The ones you are most likely to change:
 | `ADMIN_DISCORD_IDS` | `[]` | JSON array string, e.g. `["123456789012345678"]`. |
 | `FASTAPI_PUBLIC_URL` | `http://localhost:8000` | Browser-facing; the API builds absolute download and logo URLs from it, so it must be reachable from the host, not from inside the compose network. |
 | `SECURE_COOKIES` | `false` | Set to `true` behind HTTPS. |
+| `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | **Total bytes per upload request**, across every file in it. See below. |
+
+### Upload size
+
+Next buffers the **entire** request body of anything it proxies — `rewrites()`
+included, not only `proxy.ts` — and the default cap is 10MB. Clip uploads are
+multipart with several files, so a routine upload silently exceeded it: the body was
+truncated and the upstream connection reset, which surfaced as an opaque failure with
+no useful message anywhere.
+
+`MAX_UPLOAD_BYTES` is therefore a single budget shared by three places, and they must
+stay in step:
+
+- `experimental.proxyClientMaxBodySize` in `next.config.ts` (read at **build** time)
+- the API's `max_upload_bytes`, which returns a clear 413 when exceeded
+- the browser, which checks the total selected size before sending anything
+
+Note this is a **per-request total**, not per file: the per-clip cap
+(`MAX_CLIP_SIZE_BYTES`) still applies on top. Because Next holds the whole body in
+memory, raising this raises the frontend's peak memory per concurrent upload — prefer
+uploading in smaller batches over setting it very high.
 
 ### FFmpeg version
 

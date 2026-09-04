@@ -6,6 +6,8 @@ import { browserApiPath } from "@/app/lib/browser-api";
 import { readApiError } from "@/app/lib/api-error";
 import type { ClientConfig } from "@/app/lib/types";
 
+const mb = (bytes: number) => Math.round(bytes / 1_000_000);
+
 export function CreateMovieForm({ config }: { config: ClientConfig }) {
   const router = useRouter();
   const [title, setTitle] = useState("");
@@ -36,8 +38,21 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
         );
       }
       if (file.size > config.maxClipSizeBytes) {
-        throw new Error(`${file.name} is larger than the upload limit.`);
+        throw new Error(
+          `${file.name} is ${mb(file.size)} MB; the limit is ` +
+            `${mb(config.maxClipSizeBytes)} MB per clip.`,
+        );
       }
+    }
+
+    // The whole request is buffered in memory by the Next proxy before it ever
+    // reaches the API, so the total matters as much as any single file.
+    const total = selected.reduce((sum, file) => sum + file.size, 0);
+    if (total > config.maxUploadBytes) {
+      throw new Error(
+        `Those ${selected.length} clips total ${mb(total)} MB; the limit is ` +
+          `${mb(config.maxUploadBytes)} MB per upload. Add them in smaller batches.`,
+      );
     }
   }
 
@@ -130,7 +145,8 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           />
           <p className="text-soft">
             Named team-player-tier, up to{" "}
-            {config.maxClipDurationSeconds.toFixed(1)}s each.
+            {config.maxClipDurationSeconds.toFixed(1)}s and {mb(config.maxClipSizeBytes)} MB each,
+            {" "}{mb(config.maxUploadBytes)} MB per upload.
           </p>
         </div>
       </div>

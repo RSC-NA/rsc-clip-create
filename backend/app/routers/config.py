@@ -24,5 +24,6 @@ def client_config():
         minClipCount=settings.min_clip_count,
         maxClipCount=settings.max_clip_count,
         maxClipSizeBytes=settings.max_clip_size_bytes,
+        maxUploadBytes=settings.max_upload_bytes,
         maxClipDurationSeconds=settings.max_clip_duration_seconds,
     )

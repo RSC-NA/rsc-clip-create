@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     min_clip_count: int = 2
     max_clip_count: int = 100
     max_clip_size_bytes: int = 524288000
+    # Total bytes for one upload request, across every file in it. Uploads
+    # reach the API through the Next rewrite, and Next buffers the entire
+    # request body in memory -- so this must match
+    # experimental.proxyClientMaxBodySize in next.config.ts, which reads the
+    # same MAX_UPLOAD_BYTES value at build time.
+    max_upload_bytes: int = 536870912
     max_clip_duration_seconds: float = 15.6
     supported_clip_extensions: str = "mp4,mov,webm,m4v,avi,mkv"
 

@@ -23,6 +23,7 @@ def test_config_is_served(client):
         "minClipCount",
         "maxClipCount",
         "maxClipSizeBytes",
+        "maxUploadBytes",
         "maxClipDurationSeconds",
     }
     assert "mp4" in body["supportedExtensions"]
