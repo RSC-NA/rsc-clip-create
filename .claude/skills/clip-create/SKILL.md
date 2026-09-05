@@ -211,6 +211,14 @@ Each of these was a real bug; the pattern matters more than the instance.
   handlers, and note a clip is referenced from *two* tables, not one.
 - **`useState` seeded from props never re-syncs** after `router.refresh()`, which
   re-renders the Server Component without remounting the client one.
+- **Chained `xfade` buffers ~0.8GB per clip at 1080p.** Seven clips in one graph hit
+  4.61GB and were OOM-killed. `join_segments` renders in groups of
+  `render_chunk_size` (4) and joins the outputs. `decide_boundaries` and
+  `place_boundaries` are split for this: a boundary is placed twice (inside its group,
+  then between group outputs) but decided once, by global index, so grouping never
+  changes the output.
+- **ffmpeg needs `-nostats`.** Progress lines flood stderr and `_run` keeps only the
+  last 2000 chars, so a real error gets pushed out. This hid an OOM kill completely.
 - **`setpts` clears a filter link's frame rate.** ffmpeg 7's `xfade` rejects an input
   reading `1/0`; ffmpeg 8 tolerates it. Every branch feeding `xfade` re-asserts `fps`
   *after* `setpts`. Development is on 8.x and the container ships 7.x, so verify filter

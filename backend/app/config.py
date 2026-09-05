@@ -71,6 +71,10 @@ class Settings(BaseSettings):
     render_audio_bitrate: str = "192k"
 
     # Safety limits
+    # Clips joined per ffmpeg pass. Chained xfades buffer heavily -- about
+    # 0.8GB per clip measured at 1080p -- so long movies are joined in
+    # groups and the group outputs joined again.
+    render_chunk_size: int = 4
     render_max_graph_inputs: int = 24
     render_ffmpeg_timeout_seconds: int = 1800
     render_ffprobe_timeout_seconds: int = 60

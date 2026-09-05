@@ -157,6 +157,25 @@ duration = sum(clip durations) + (clip count - 1) x hold
 Set the hold to `0` for hard cuts. Clips too short to carry the blend clamp it
 automatically, and degrade to a hard cut rather than failing.
 
+### Why rendering happens in groups
+
+Chained `xfade` filters buffer heavily. Measured at 1080p, peak memory was 1.69GB for
+two clips and 4.61GB for seven — at which point the OOM killer took the worker, and the
+only thing recorded was 2000 characters of ffmpeg progress output, because `frame=` lines
+had pushed the real error out of the captured tail.
+
+Clips are therefore joined in groups of `RENDER_CHUNK_SIZE` (default 4) and the group
+outputs joined again, recursively. The same seven-clip movie now peaks at 2.96GB. Each
+extra level costs one more re-encode generation, which is why the default is 4 rather
+than 2.
+
+Transition choices are seeded by a boundary's **global** index and decided before any
+grouping, so how the work is divided never changes what the output looks like.
+
+If a render still dies, the error now says so plainly — `FFmpeg was killed by SIGKILL` —
+rather than dumping progress output. Lower `RENDER_CHUNK_SIZE` or give the container more
+memory.
+
 ## Render diagnostics
 
 The backend records detailed render outcomes in two dedicated tables:

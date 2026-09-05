@@ -79,9 +79,17 @@ def test_zero_hold_disables_stings_entirely():
     assert total_frames(segments, boundaries) == 1350
 
 
+def _with_encoded_stings(boundaries, tmp_path):
+    """Stand in for render_sting, which would otherwise shell out to ffmpeg."""
+    for boundary in boundaries:
+        if not boundary.hard_cut:
+            boundary.clip = tmp_path / f"sting-{boundary.index:04d}.mp4"
+    return boundaries
+
+
 def test_graph_references_every_input_and_maps_the_final_labels(tmp_path):
     segments = _segments(3)
-    boundaries = plan_boundaries(segments, OPTIONS, tmp_path)
+    boundaries = _with_encoded_stings(plan_boundaries(segments, OPTIONS, tmp_path), tmp_path)
     command = build_chain_command(segments, boundaries, Path("out.mp4"), OPTIONS)
     graph = command[command.index("-filter_complex") + 1]
 
@@ -101,14 +109,90 @@ def test_graph_references_every_input_and_maps_the_final_labels(tmp_path):
 def test_blend_frames_convert_to_whole_audio_samples(tmp_path):
     """48000 / 30 == 1600 exactly, so no frame lands mid-sample."""
     segments = _segments(3)
-    boundaries = plan_boundaries(segments, OPTIONS, tmp_path)
+    boundaries = _with_encoded_stings(plan_boundaries(segments, OPTIONS, tmp_path), tmp_path)
     command = build_chain_command(segments, boundaries, Path("o.mp4"), OPTIONS)
     graph = command[command.index("-filter_complex") + 1]
     assert "acrossfade=ns=14400" in graph  # 9 frames * 1600
 
 
-def test_graph_without_sting_art_fails_clearly(tmp_path):
+def test_graph_without_an_encoded_sting_fails_clearly(tmp_path):
     segments = _segments(2)
-    boundaries = plan_boundaries(segments, OPTIONS)  # no workdir -> no PNGs
-    with pytest.raises(RenderError, match="no sting image"):
+    boundaries = plan_boundaries(segments, OPTIONS)  # no workdir, no encode
+    with pytest.raises(RenderError, match="no encoded sting"):
         build_chain_command(segments, boundaries, Path("o.mp4"), OPTIONS)
+
+
+def test_every_pass_two_input_is_an_encoded_clip(tmp_path):
+    """Regression: sting inputs used to be looped multi-megapixel PNGs, which
+    the chained xfades buffered at ~33MB a frame. A seven-clip movie was killed
+    by the OOM killer. Every input must now be a normal encoded stream."""
+    segments = _segments(4)
+    boundaries = _with_encoded_stings(plan_boundaries(segments, OPTIONS, tmp_path), tmp_path)
+    command = build_chain_command(segments, boundaries, Path("o.mp4"), OPTIONS)
+
+    assert "-loop" not in command, "a looped still image is still being decoded in pass 2"
+    assert not any(str(a).endswith(".png") for a in command), command
+    assert all(
+        str(command[i + 1]).endswith(".mp4")
+        for i, a in enumerate(command)
+        if a == "-i"
+    )
+
+
+def test_a_signal_death_is_reported_as_such_not_as_ffmpeg_output(monkeypatch):
+    """Regression: a container OOM kill surfaced as 2000 characters of ffmpeg
+    progress output, because `frame=...` lines had pushed everything useful out
+    of the captured tail. The cause was invisible in the recorded error."""
+    import subprocess
+
+    from backend.app.services import renderer as renderer_module
+
+    def killed(*args, **kwargs):
+        raise subprocess.CalledProcessError(
+            -9, "ffmpeg", output="", stderr="frame= 481 fps=13 q=26.0 size=20992KiB"
+        )
+
+    monkeypatch.setattr(renderer_module.subprocess, "run", killed)
+
+    with pytest.raises(RenderError) as caught:
+        renderer_module._run(["ffmpeg"], "concat")
+
+    message = str(caught.value)
+    assert "SIGKILL" in message
+    assert "memory" in message
+    assert "frame=" not in message, "progress spam is still being surfaced"
+    assert caught.value.stage == "concat"
+
+
+def test_chunking_preserves_the_transition_decisions(tmp_path):
+    """Boundaries are seeded by their GLOBAL index, so grouping must not change
+    which transition appears where."""
+    from backend.app.services.renderer import decide_boundaries
+
+    segments = _segments(7)
+    decided = decide_boundaries(segments, OPTIONS, tmp_path)
+
+    assert [b.index for b in decided] == list(range(6))
+    assert [b.spec.transition_in for b in decided] == [
+        b.spec.transition_in for b in decide_boundaries(segments, OPTIONS, tmp_path)
+    ]
+
+
+def test_placing_the_same_boundaries_against_different_segments(tmp_path):
+    """Chunked rendering places a boundary twice: inside its group, and between
+    group outputs. Placement must be independent of the decision."""
+    from backend.app.services.renderer import decide_boundaries, place_boundaries
+
+    segments = _segments(3, frames=450)
+    decided = decide_boundaries(segments, OPTIONS, tmp_path)
+    place_boundaries(segments, decided)
+    inner = [(b.sting_offset, b.clip_offset) for b in decided]
+
+    longer = _segments(3, frames=900)
+    place_boundaries(longer, decided)
+    outer = [(b.sting_offset, b.clip_offset) for b in decided]
+
+    assert inner != outer, "offsets must follow the segments they are placed against"
+    assert [b.spec.transition_in for b in decided] == [
+        b.spec.transition_in for b in decided
+    ]
