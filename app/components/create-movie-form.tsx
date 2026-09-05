@@ -7,6 +7,9 @@ import { readApiError } from "@/app/lib/api-error";
 import type { ClientConfig } from "@/app/lib/types";
 
 const mb = (bytes: number) => Math.round(bytes / 1_000_000);
+// 31 reads better than 31.0; 15.6 still needs its decimal.
+const seconds = (value: number) =>
+  Number.isInteger(value) ? String(value) : value.toFixed(1);
 
 export function CreateMovieForm({ config }: { config: ClientConfig }) {
   const router = useRouter();
@@ -145,7 +148,7 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           />
           <p className="text-soft">
             Named team-player-tier, up to{" "}
-            {config.maxClipDurationSeconds.toFixed(1)}s and {mb(config.maxClipSizeBytes)} MB each,
+            {seconds(config.maxClipDurationSeconds)}s and {mb(config.maxClipSizeBytes)} MB each,
             {" "}{mb(config.maxUploadBytes)} MB per upload.
           </p>
         </div>

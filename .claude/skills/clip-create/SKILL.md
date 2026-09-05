@@ -1,6 +1,6 @@
 ---
 name: clip-create
-description: Working knowledge of the Clip Create Studio repo — a Next.js 16 App Router frontend plus a FastAPI/SQLAlchemy backend and an FFmpeg render worker that concatenates 15-second labeled clips into one MP4. Load before editing anything under app/, backend/, or scripts/, or when asked about movies, clips, slots, render jobs, the timeline editor, the Discord session flow, or the admin console.
+description: Working knowledge of the Clip Create Studio repo — a Next.js 16 App Router frontend plus a FastAPI/SQLAlchemy backend and an FFmpeg render worker that concatenates short labeled clips into one MP4. Load before editing anything under app/, backend/, or scripts/, or when asked about movies, clips, slots, render jobs, the timeline editor, the Discord session flow, or the admin console.
 ---
 
 # Clip Create Studio

@@ -165,3 +165,23 @@ def test_the_advertised_upload_budget_is_at_least_one_clip(client):
     """A per-clip limit above the per-request budget would be unusable."""
     body = client.get("/api/v1/config").json()
     assert body["maxUploadBytes"] >= body["maxClipSizeBytes"]
+
+
+@requires_ffmpeg
+def test_a_clip_under_the_duration_cap_is_accepted(client, make_media, db_session):
+    """The cap is 31s. A clip comfortably inside it must not be rejected."""
+    media = make_media("Falcons-Ace-Gold.mp4", seconds=3, size="160x120")
+    response = client.post(
+        "/api/v1/clips",
+        files=[("files", ("Falcons-Ace-Gold.mp4", media.read_bytes(), "video/mp4"))],
+    )
+    assert response.status_code == 200, response.text
+    assert db_session.query(Clip).count() == 1
+
+
+def test_the_advertised_duration_cap_matches_the_setting(client):
+    from backend.app.config import get_settings
+
+    assert client.get("/api/v1/config").json()["maxClipDurationSeconds"] == (
+        get_settings().max_clip_duration_seconds
+    )

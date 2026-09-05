@@ -1,6 +1,6 @@
 # Clip Create Studio
 
-Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembling multiple 15-second source clips into longer-form YouTube videos.
+Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembling multiple short source clips into longer-form YouTube videos.
 
 ## What is in this repo
 

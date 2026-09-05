@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     # experimental.proxyClientMaxBodySize in next.config.ts, which reads the
     # same MAX_UPLOAD_BYTES value at build time.
     max_upload_bytes: int = 536870912
-    max_clip_duration_seconds: float = 15.6
+    max_clip_duration_seconds: float = 31
     supported_clip_extensions: str = "mp4,mov,webm,m4v,avi,mkv"
 
     # Render geometry and timing. Frames are the unit of truth: xfade snaps

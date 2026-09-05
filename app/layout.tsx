@@ -3,7 +3,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Clip Create Studio",
-  description: "Compose YouTube-ready movies from fifteen second clips.",
+  description: "Compose YouTube-ready movies from short source clips.",
 };
 
 export default function RootLayout({
