@@ -61,6 +61,17 @@ def test_an_overlong_filename_segment_is_rejected(client, db_session, segment):
     assert db_session.query(Clip).count() == 0
 
 
+def test_a_storage_component_too_long_is_rejected_for_sweeps(client, isolated_storage):
+    # 36-byte UUID + hyphen + 215-byte stem + .mov = 256 bytes on disk.
+    response = client.post(
+        "/api/v1/sweeps",
+        files=[("file", ("a" * 215 + ".mov", b"video bytes", "video/quicktime"))],
+    )
+    assert response.status_code == 400, response.text
+    assert client.get("/api/v1/sweeps").json() is None
+    assert list((isolated_storage / "sweeps").iterdir()) == []
+
+
 def test_an_oversize_brand_sweep_is_rejected(client, db_session, monkeypatch):
     """The limit is enforced during the write, not after it -- buffering a
     200MB upload to measure it lets a caller fill the disk first."""
