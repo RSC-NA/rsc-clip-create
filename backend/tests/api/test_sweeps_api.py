@@ -71,6 +71,51 @@ def test_replacing_removes_the_previous_file(client, db_session, alpha_video_byt
     assert not first_path.is_file(), "the replaced sweep is still on disk"
 
 
+def test_failed_first_commit_removes_new_sweep_file(
+    client, db_session, isolated_storage, alpha_video_bytes, monkeypatch
+):
+    def fail_commit():
+        raise RuntimeError("database commit failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_session, "commit", fail_commit)
+        response = _upload(client, alpha_video_bytes, name="new.mov")
+
+    assert response.status_code == 500
+    assert list((isolated_storage / "sweeps").iterdir()) == []
+    current = client.get("/api/v1/sweeps")
+    assert current.status_code == 200
+    assert current.json() is None
+
+
+def test_failed_replacement_commit_preserves_prior_sweep(
+    client, db_session, isolated_storage, alpha_video_bytes, monkeypatch
+):
+    first = _upload(client, alpha_video_bytes, name="first.mov")
+    assert first.status_code == 200, first.text
+    prior = first.json()
+    prior_path = Path(prior["storagePath"])
+    assert prior_path.is_file()
+
+    def fail_commit():
+        raise RuntimeError("database commit failed")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(db_session, "commit", fail_commit)
+        response = _upload(client, alpha_video_bytes, name="second.mov")
+
+    assert response.status_code == 500
+    assert list((isolated_storage / "sweeps").iterdir()) == [prior_path]
+    assert prior_path.is_file()
+    current = client.get("/api/v1/sweeps")
+    assert current.status_code == 200
+    assert current.json()["id"] == prior["id"]
+    assert current.json()["originalName"] == "first.mov"
+    served = client.get(f"/api/v1/sweeps/{prior['id']}/file")
+    assert served.status_code == 200
+    assert served.content == alpha_video_bytes
+
+
 def test_opaque_h264_is_rejected_without_creating_a_sweep(
     client, db_session, isolated_storage, make_media
 ):

@@ -107,27 +107,36 @@ def upload_brand_sweep(
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="The sweep video must have an alpha channel.")
 
-    existing = _current(db, user.id)
-    if existing is not None:
-        previous = existing.storage_path
-        existing.original_name = file.filename or destination.name
-        existing.storage_path = str(destination)
-        existing.duration_seconds = duration
+    try:
+        existing = _current(db, user.id)
+        if existing is not None:
+            previous = existing.storage_path
+            existing.original_name = file.filename or destination.name
+            existing.storage_path = str(destination)
+            existing.duration_seconds = duration
+        else:
+            sweep = BrandSweep(
+                user_id=user.id,
+                original_name=file.filename or destination.name,
+                storage_path=str(destination),
+                duration_seconds=duration,
+            )
+            db.add(sweep)
         db.commit()
+    except Exception:
+        try:
+            db.rollback()
+        finally:
+            destination.unlink(missing_ok=True)
+        raise
+
+    if existing is not None:
         db.refresh(existing)
         if previous != str(destination):
             Path(previous).unlink(missing_ok=True)
         logger.info("replaced brand sweep user=%s", user.id)
         return _to_response(existing)
 
-    sweep = BrandSweep(
-        user_id=user.id,
-        original_name=file.filename or destination.name,
-        storage_path=str(destination),
-        duration_seconds=duration,
-    )
-    db.add(sweep)
-    db.commit()
     db.refresh(sweep)
     logger.info("stored brand sweep user=%s", user.id)
     return _to_response(sweep)
