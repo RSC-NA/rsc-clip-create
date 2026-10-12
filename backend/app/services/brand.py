@@ -76,7 +76,7 @@ def create_label_image(
     stroke_width: int = 3,
     canvas: tuple[int, int] = (1920, 1080),
 ) -> None:
-    """Full-frame RGBA overlay: one line of text, bottom left, no backing plate.
+    """Full-frame RGBA overlay: bottom-left text, wrapped only when needed, no plate.
 
     Text only. The brand mark is the sweep that plays over every cut; it has
     never been part of the label since the per-team logo library was removed.
@@ -91,22 +91,46 @@ def create_label_image(
     font = resolve_font(font_size, font_path)
 
     text = name.label
-    left, top, right, bottom = draw.textbbox(
-        (0, 0), text, font=font, stroke_width=stroke_width
-    )
-    text_height = bottom - top
-
     margin_left, margin_bottom = 40, 44
-    text_y = height - margin_bottom - text_height - top
+    available_width = width - 2 * margin_left
 
-    draw.text(
-        (margin_left, text_y),
-        text,
-        font=font,
-        fill=(255, 255, 255, 255),
-        stroke_width=stroke_width,
-        stroke_fill=(0, 0, 0, 190),
-    )
+    def bounds(line: str) -> tuple[int, int, int, int]:
+        return draw.textbbox((0, 0), line, font=font, stroke_width=stroke_width)
+
+    def fits(line: str) -> bool:
+        left, _, right, _ = bounds(line)
+        return right - left <= available_width
+
+    if fits(text):
+        lines = [text]
+    else:
+        # Keep the metadata segments separate when wrapping; an uninterrupted
+        # segment may itself exceed the frame, so split it at glyph boundaries.
+        # Never discard the remainder (in particular the last tier glyph).
+        lines = []
+        for index, segment in enumerate((name.team, name.player, name.tier)):
+            remaining = ("· " if index else "") + segment
+            while remaining:
+                end = 1
+                while end < len(remaining) and fits(remaining[:end + 1]):
+                    end += 1
+                lines.append(remaining[:end])
+                remaining = remaining[end:]
+
+    boxes = [bounds(line) for line in lines]
+    line_gap = 8
+    total_height = sum(bottom - top for _, top, _, bottom in boxes) + line_gap * (len(lines) - 1)
+    line_top = height - margin_bottom - total_height
+    for line, (left, top, _, bottom) in zip(lines, boxes):
+        draw.text(
+            (margin_left - left, line_top - top),
+            line,
+            font=font,
+            fill=(255, 255, 255, 255),
+            stroke_width=stroke_width,
+            stroke_fill=(0, 0, 0, 190),
+        )
+        line_top += bottom - top + line_gap
     image.save(destination, format="PNG")
 
 
