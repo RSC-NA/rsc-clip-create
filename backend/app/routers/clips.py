@@ -135,64 +135,73 @@ def upload_clips(
     created_paths: list[Path] = []
 
     def _abort(detail: str) -> HTTPException:
-        for path in created_paths:
-            path.unlink(missing_ok=True)
         return HTTPException(status_code=400, detail=detail)
 
-    for file, parsed, storage_name in zip(files, parsed_files, storage_names):
-        try:
-            # The size limit is enforced while streaming, not after the whole
-            # file has already been written to disk.
-            destination = save_upload(
-                file,
-                storage_name,
-                max_bytes=settings.max_clip_size_bytes,
+    try:
+        for file, parsed, storage_name in zip(files, parsed_files, storage_names):
+            try:
+                # The size limit is enforced while streaming, not after the whole
+                # file has already been written to disk.
+                destination = save_upload(
+                    file,
+                    storage_name,
+                    max_bytes=settings.max_clip_size_bytes,
+                )
+            except UploadTooLarge:
+                raise _abort(f"Clip {file.filename} exceeds the file-size limit.") from None
+            created_paths.append(destination)
+
+            try:
+                media = probe_media(destination, strict=True)
+            except ProbeError as exc:
+                raise _abort(f"Clip {file.filename} could not be read as video.") from exc
+            if not media.get("has_video"):
+                raise _abort(f"Clip {file.filename} has no video stream.")
+
+            duration = media.get("duration")
+            if duration is None or duration <= 0:
+                # Accepting this defers the failure to render time, where it kills
+                # the whole movie instead of one upload.
+                raise _abort(f"Clip {file.filename} has no readable duration.")
+            if duration > settings.max_clip_duration_seconds:
+                raise _abort(
+                    f"Clip {file.filename} exceeds the "
+                    f"{settings.max_clip_duration_seconds:g} second limit."
+                )
+
+            clip = Clip(
+                user_id=user.id,
+                original_name=file.filename or "clip.mp4",
+                storage_path=str(destination),
+                duration_seconds=duration,
+                metadata_json={"content_type": file.content_type},
+                team=parsed.team,
+                player=parsed.player,
+                tier=parsed.tier,
+                extension=parsed.extension,
             )
-        except UploadTooLarge:
-            raise _abort(f"Clip {file.filename} exceeds the file-size limit.") from None
-        created_paths.append(destination)
+            db.add(clip)
+            db.flush()
+            saved_clips.append(clip)
 
+        if movie_id:
+            movie = db.scalar(select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id))
+            if movie:
+                next_index = max((slot.sort_index for slot in movie.slots), default=-1) + 1
+                for offset, clip in enumerate(saved_clips):
+                    db.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=next_index + offset, overlay_text=""))
+
+        db.commit()
+    except Exception:
+        # Neither a failed flush nor a failed commit may leave files behind.
+        # Roll back validation failures too, since earlier clips in a batch
+        # may already have been flushed into this transaction.
         try:
-            media = probe_media(destination, strict=True)
-        except ProbeError as exc:
-            raise _abort(f"Clip {file.filename} could not be read as video.") from exc
-        if not media.get("has_video"):
-            raise _abort(f"Clip {file.filename} has no video stream.")
-
-        duration = media.get("duration")
-        if duration is None or duration <= 0:
-            # Accepting this defers the failure to render time, where it kills
-            # the whole movie instead of one upload.
-            raise _abort(f"Clip {file.filename} has no readable duration.")
-        if duration > settings.max_clip_duration_seconds:
-            raise _abort(
-                f"Clip {file.filename} exceeds the "
-                f"{settings.max_clip_duration_seconds:g} second limit."
-            )
-
-        clip = Clip(
-            user_id=user.id,
-            original_name=file.filename or "clip.mp4",
-            storage_path=str(destination),
-            duration_seconds=duration,
-            metadata_json={"content_type": file.content_type},
-            team=parsed.team,
-            player=parsed.player,
-            tier=parsed.tier,
-            extension=parsed.extension,
-        )
-        db.add(clip)
-        db.flush()
-        saved_clips.append(clip)
-
-    if movie_id:
-        movie = db.scalar(select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id))
-        if movie:
-            next_index = max((slot.sort_index for slot in movie.slots), default=-1) + 1
-            for offset, clip in enumerate(saved_clips):
-                db.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=next_index + offset, overlay_text=""))
-
-    db.commit()
+            db.rollback()
+        finally:
+            for path in created_paths:
+                path.unlink(missing_ok=True)
+        raise
     return [_clip_to_response(clip) for clip in saved_clips]
 
 

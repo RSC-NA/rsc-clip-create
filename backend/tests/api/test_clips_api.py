@@ -1,5 +1,7 @@
 """HTTP-level tests for clip upload and listing."""
 
+from pathlib import Path
+
 import pytest
 
 from backend.app.models import Clip
@@ -171,6 +173,71 @@ def test_one_bad_file_leaves_no_partial_batch(client, make_media, isolated_stora
     assert response.status_code == 400
     assert db_session.query(Clip).count() == 0
     assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_failed_upload_flush_removes_file_and_rolls_back(client, isolated_storage, db_session, monkeypatch):
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    real_flush = db_session.flush
+
+    def fail_after_flush(*args, **kwargs):
+        real_flush(*args, **kwargs)
+        raise RuntimeError("simulated flush failure")
+
+    monkeypatch.setattr(db_session, "flush", fail_after_flush)
+    response = _upload(client, "Falcons-Ace-Gold.mp4", b"first clip")
+
+    assert response.status_code == 500
+    assert list((isolated_storage / "clips").iterdir()) == []
+    assert db_session.query(Clip).count() == 0
+    assert client.get("/api/v1/clips").json() == []
+
+
+def test_failed_upload_commit_removes_all_files_and_rolls_back(
+    client, isolated_storage, db_session, monkeypatch
+):
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+
+    def fail_commit():
+        raise RuntimeError("simulated commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    response = client.post(
+        "/api/v1/clips",
+        files=[
+            ("files", ("Falcons-Ace-Gold.mp4", b"first clip", "video/mp4")),
+            ("files", ("Ravens-Bo-Silver.mp4", b"second clip", "video/mp4")),
+        ],
+    )
+
+    assert response.status_code == 500
+    assert list((isolated_storage / "clips").iterdir()) == []
+    assert db_session.query(Clip).count() == 0
+    assert client.get("/api/v1/clips").json() == []
+
+
+def test_successful_upload_retains_saved_file(client, isolated_storage, db_session, monkeypatch):
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = _upload(client, "Falcons-Ace-Gold.mp4", b"first clip")
+
+    assert response.status_code == 200, response.text
+    clips = response.json()
+    assert len(clips) == 1
+    saved = Path(clips[0]["storagePath"])
+    assert saved.parent == isolated_storage / "clips"
+    assert saved.read_bytes() == b"first clip"
+    assert db_session.query(Clip).count() == 1
 
 
 @requires_ffmpeg
