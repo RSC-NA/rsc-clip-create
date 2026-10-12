@@ -57,7 +57,7 @@ def audit(db: Session) -> AuditReport:
             if not raw:
                 continue
             path = Path(raw)
-            normalized = path.resolve() if path.is_absolute() else path.absolute()
+            normalized = path.resolve()
             referenced.add(normalized)
             folder_references.add(normalized)
             if not path.is_file():
@@ -69,7 +69,7 @@ def audit(db: Session) -> AuditReport:
         for candidate in sorted(directory.iterdir()):
             if not candidate.is_file() or candidate.name.startswith("."):
                 continue
-            if candidate.absolute() not in folder_references:
+            if candidate.resolve() not in folder_references:
                 report.orphan_files.append(candidate)
 
     # The legacy logos table is gone, but other rows can still point at an
@@ -83,7 +83,7 @@ def audit(db: Session) -> AuditReport:
                 or candidate.name.startswith(".")
             ):
                 continue
-            if candidate.absolute() not in referenced:
+            if candidate.resolve() not in referenced:
                 report.orphan_files.append(candidate)
 
     return report
