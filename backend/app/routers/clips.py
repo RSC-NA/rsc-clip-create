@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi.routing import APIRoute
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
@@ -25,8 +26,56 @@ from backend.app.storage import (
 
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/clips", tags=["clips"])
 settings = get_settings()
+
+
+def _request_too_large(size: int) -> HTTPException:
+    return HTTPException(
+        status_code=413,
+        detail=(
+            f"That upload is {size / 1e6:.0f} MB; the limit is "
+            f"{settings.max_upload_bytes / 1e6:.0f} MB per request. "
+            "Upload fewer clips at a time."
+        ),
+    )
+
+
+class ClipUploadRoute(APIRoute):
+    """Count the multipart bytes before FastAPI parses File parameters.
+
+    The upload handler only sees already-parsed files, whose sizes exclude
+    multipart boundaries and headers. Wrapping the ASGI receive stream keeps
+    the check request-wide even when Content-Length is absent or incorrect.
+    """
+
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+        if self.methods != {"POST"}:
+            return handler
+
+        async def limit_upload(request: Request):
+            declared = request.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > settings.max_upload_bytes:
+                raise _request_too_large(int(declared))
+
+            received = 0
+            receive = request.receive
+
+            async def limited_receive():
+                nonlocal received
+                message = await receive()
+                if message["type"] == "http.request":
+                    received += len(message.get("body", b""))
+                    if received > settings.max_upload_bytes:
+                        raise _request_too_large(received)
+                return message
+
+            return await handler(Request(request.scope, receive=limited_receive))
+
+        return limit_upload
+
+
+router = APIRouter(prefix="/clips", tags=["clips"], route_class=ClipUploadRoute)
 
 
 def _clip_to_response(clip: Clip) -> ClipResponse:
@@ -55,27 +104,11 @@ def list_clips(
 
 @router.post("", response_model=list[ClipResponse])
 def upload_clips(
-    request: Request,
     files: list[UploadFile] = File(...),
     movie_id: str | None = Query(default=None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    # Checked against the whole request, not per file: the upload arrives
-    # through Next's rewrite, which buffers the entire body in memory before
-    # this handler runs. Exceeding the proxy's own limit truncates the body and
-    # the upstream connection resets, which surfaces as an opaque failure.
-    declared = request.headers.get("content-length")
-    if declared and declared.isdigit() and int(declared) > settings.max_upload_bytes:
-        raise HTTPException(
-            status_code=413,
-            detail=(
-                f"That upload is {int(declared) / 1e6:.0f} MB; the limit is "
-                f"{settings.max_upload_bytes / 1e6:.0f} MB per request. "
-                "Upload fewer clips at a time."
-            ),
-        )
-
     if not files:
         raise HTTPException(status_code=400, detail="Select at least one clip to upload.")
     if len(files) > settings.max_clip_count:
