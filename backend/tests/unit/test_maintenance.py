@@ -1,4 +1,77 @@
+import sys
+
+from sqlalchemy.orm import sessionmaker
+
+from backend.app import maintenance
 from backend.app.maintenance import audit, repair
+
+
+def _run_cli(monkeypatch, capsys, *args):
+    monkeypatch.setattr(sys, "argv", ["maintenance", "audit", *args])
+    result = maintenance.main()
+    return result, capsys.readouterr().out
+
+
+def test_cli_audits_and_removes_legacy_logo_without_logos_table(
+    engine, isolated_storage, monkeypatch, capsys
+):
+    logo = isolated_storage / "logos" / "old.png"
+    logo.parent.mkdir()
+    logo.write_bytes(b"old logo")
+    monkeypatch.setattr(maintenance, "SessionLocal", sessionmaker(bind=engine))
+
+    status, output = _run_cli(monkeypatch, capsys)
+    assert status == 1
+    assert "Files with no database row (1," in output
+    assert str(logo) in output
+    assert logo.read_bytes() == b"old logo"
+
+    _, output = _run_cli(monkeypatch, capsys, "--fix")
+    assert "Files with no database row (1," in output
+    assert "Removed 1 orphaned file(s)." in output
+    assert not logo.exists()
+
+    status, output = _run_cli(monkeypatch, capsys)
+    assert status == 0
+    assert output == "Storage and database agree. Nothing to do.\n"
+
+
+def test_cli_logo_cleanup_preserves_references_and_files_outside_logos(
+    engine, db_session, make_clip, isolated_storage, tmp_path, monkeypatch, capsys
+):
+    logos = isolated_storage / "logos"
+    logos.mkdir()
+    referenced = logos / "in-use.png"
+    referenced.write_bytes(b"keep")
+    make_clip(storage_path=str(referenced))
+    orphan = logos / "old.png"
+    orphan.write_bytes(b"remove")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(b"outside")
+    link = logos / "outside-link.png"
+    link.symlink_to(outside)
+    nested = logos / "nested"
+    nested.mkdir()
+    (nested / "untouched.png").write_bytes(b"nested")
+    monkeypatch.setattr(maintenance, "SessionLocal", sessionmaker(bind=engine))
+
+    _, output = _run_cli(monkeypatch, capsys, "--fix")
+    assert "Files with no database row (1," in output
+    assert str(orphan) in output
+    assert str(referenced) not in output
+    assert str(outside) not in output
+    assert "Removed 1 orphaned file(s)." in output
+    assert not orphan.exists()
+    assert referenced.read_bytes() == b"keep"
+    assert outside.read_bytes() == b"outside"
+    assert link.is_symlink()
+    assert (nested / "untouched.png").read_bytes() == b"nested"
+
+    status, output = _run_cli(monkeypatch, capsys)
+    assert status == 0
+    assert output == "Storage and database agree. Nothing to do.\n"
+
+
 
 
 def test_a_clean_store_reports_nothing(db_session, isolated_storage):

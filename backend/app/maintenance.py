@@ -48,15 +48,18 @@ class AuditReport:
 def audit(db: Session) -> AuditReport:
     """Files with no row, and rows pointing at files that are gone."""
     report = AuditReport()
+    referenced: set[Path] = set()
 
     for folder, model, column in TRACKED:
-        referenced: set[Path] = set()
+        folder_references: set[Path] = set()
         for row in db.scalars(select(model)).all():
             raw = getattr(row, column)
             if not raw:
                 continue
             path = Path(raw)
-            referenced.add(path.resolve() if path.is_absolute() else path.absolute())
+            normalized = path.resolve() if path.is_absolute() else path.absolute()
+            referenced.add(normalized)
+            folder_references.add(normalized)
             if not path.is_file():
                 report.missing_files.append((model.__tablename__, row.id, raw))
 
@@ -65,6 +68,20 @@ def audit(db: Session) -> AuditReport:
             continue
         for candidate in sorted(directory.iterdir()):
             if not candidate.is_file() or candidate.name.startswith("."):
+                continue
+            if candidate.absolute() not in folder_references:
+                report.orphan_files.append(candidate)
+
+    # The legacy logos table is gone, but other rows can still point at an
+    # uploaded logo. Only direct, ordinary files in this directory are eligible.
+    logos = settings.storage_root / "logos"
+    if logos.is_dir() and not logos.is_symlink():
+        for candidate in sorted(logos.iterdir()):
+            if (
+                candidate.is_symlink()
+                or not candidate.is_file()
+                or candidate.name.startswith(".")
+            ):
                 continue
             if candidate.absolute() not in referenced:
                 report.orphan_files.append(candidate)
