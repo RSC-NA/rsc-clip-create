@@ -635,29 +635,24 @@ def render_movie(
             len(segments), sum(0 if b.hard_cut else 1 for b in boundaries),
             expected, expected / options.fps,
         )
-        # Render to a scratch path and move into place only on success, so a
-        # killed or timed-out ffmpeg does not leave a truncated MP4 that no
-        # Video row references and nothing ever cleans up.
+        # Keep the file in the temporary directory until final verification
+        # succeeds. A failed probe must not publish an unreferenced MP4.
         scratch = workdir / "output.mp4"
         join_segments(
             segments, boundaries, scratch, options, workdir, on_progress=on_progress
         )
         if not scratch.exists() or scratch.stat().st_size == 0:
             raise RenderError("FFmpeg did not produce an output file.", "verify")
-        output.parent.mkdir(parents=True, exist_ok=True)
+        media = probe_media(scratch)
+        if media.get("duration") is None or not media.get("has_video") or not media.get("has_audio"):
+            raise RenderError("The rendered output is missing duration, video, or audio.", "verify")
+        actual_frames = media.get("nb_frames")
+        if actual_frames is None or actual_frames != expected:
+            raise RenderError(
+                f"The rendered output has {actual_frames} video frames; expected {expected}.",
+                "verify",
+            )
         shutil.move(str(scratch), str(output))
-
-    if not output.exists() or output.stat().st_size == 0:
-        raise RenderError("FFmpeg did not produce an output file.", "verify")
-    media = probe_media(output)
-    if media.get("duration") is None or not media.get("has_video") or not media.get("has_audio"):
-        raise RenderError("The rendered output is missing duration, video, or audio.", "verify")
-    actual_frames = media.get("nb_frames")
-    if actual_frames is None or actual_frames != expected:
-        raise RenderError(
-            f"The rendered output has {actual_frames} video frames; expected {expected}.",
-            "verify",
-        )
 
     media["frames"] = actual_frames
     media["expected_duration"] = expected / options.fps

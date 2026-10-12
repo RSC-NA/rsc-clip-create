@@ -77,12 +77,14 @@ def test_render_error_marks_job_and_clips_failed(db_session):
     assert "ffmpeg exploded" in attempt.error_summary
 
 
-def test_unverified_final_render_does_not_create_succeeded_video(db_session, monkeypatch):
-    """The worker only records success if the actual renderer verifies its output."""
+def test_unverified_final_render_does_not_create_succeeded_video(db_session, monkeypatch, isolated_storage):
+    """The real renderer must not leave an orphan MP4 when verification fails."""
     from backend.app.services import renderer as renderer_module
     from backend.app.services.renderer import Segment
+    from backend.app.storage import output_path
 
-    movie, _ = _movie_with_clips(db_session)
+    movie, job = _movie_with_clips(db_session)
+    destination = output_path(movie.id, job.latest_attempt_id)
     monkeypatch.setattr(renderer_module, "load_sweep", lambda options: None)
     monkeypatch.setattr(
         renderer_module, "normalize_clip",
@@ -105,6 +107,8 @@ def test_unverified_final_render_does_not_create_succeeded_video(db_session, mon
     assert processed.attempts[0].status == "failed"
     assert db_session.get(Movie, movie.id).status == "failed"
     assert db_session.query(Video).count() == 0
+    assert not destination.exists()
+    assert list((isolated_storage / "renders").glob("*.mp4")) == []
 
 
 def test_clips_missing_metadata_are_rejected_not_rendered(db_session):
