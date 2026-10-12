@@ -66,6 +66,41 @@ def test_served_pattern_compiles_and_agrees_with_the_parser_in_javascript(client
     assert js_results == python_results, dict(zip(cases, zip(js_results, python_results)))
 
 
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_served_filename_preflight_rejects_whitespace_only_segments(client):
+    """Run the /config rule in the engine used by the create form before upload."""
+    response = client.get("/api/v1/config")
+    assert response.status_code == 200
+    pattern = response.json()["filenamePattern"]
+    names = [
+        "   -Ace-Gold.mp4",
+        "Falcons-   -Gold.mp4",
+        "Falcons-Ace-   .mp4",
+        VALID,
+        " Falcons - Ace - Gold .mp4",  # whitespace around real labels is valid
+    ]
+    script = (
+        "const re = new RegExp(process.argv[1]);"
+        "const names = JSON.parse(process.argv[2]);"
+        "console.log(JSON.stringify(names.map(name => re.test(name))));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, pattern, json.dumps(names)],
+        capture_output=True, text=True, check=True,
+    )
+    assert json.loads(result.stdout) == [False, False, False, True, True]
+
+
+def test_direct_upload_preserves_whitespace_segment_error(client):
+    filename = "   -Ace-Gold.mp4"
+    response = client.post(
+        "/api/v1/clips",
+        files=[("files", (filename, b"not a video", "video/mp4"))],
+    )
+    assert response.status_code == 400, response.text
+    assert "Team, player, and tier must not be empty." in response.json()["detail"]
+
+
 def test_client_pattern_matches_the_parser_in_python(client):
     compiled = re.compile(CLIENT_FILENAME_PATTERN)
     assert compiled.fullmatch(VALID)
