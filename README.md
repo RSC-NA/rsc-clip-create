@@ -150,8 +150,11 @@ Uploads are checked with ffprobe on the way in — the extension is not taken as
 and capped at `MAX_BRAND_SWEEP_BYTES` (200MB), enforced during the write. Any audio on
 the sweep is ignored; the movie's audio is the clips, hard-cut.
 
-A missing file, an unreadable one, or a row pointing at a deleted file degrades to a
-plain cut. A transition is decoration; it never fails a render.
+If an account's sweep row points at a deleted uploaded file, that upload is treated as
+unavailable: the configured `RENDER_BRAND_SWEEP_PATH` is selected if set, otherwise the
+bundled `brand-sweep.mov` is used. This is not itself a reason for a plain cut. If the
+selected sweep is missing or cannot be loaded, cuts render plain instead of failing the
+render. A transition is decoration; it never fails a render.
 
 Replacing the brand logo with this dropped three things: the per-movie transition style
 and hold controls, the generated blue-and-orange wedge card, and the brand logo that sat
@@ -160,10 +163,10 @@ on disk, so run `python -m backend.app.maintenance audit --fix` to clear them.
 
 ### Clips shorter than the sweep
 
-A cut only carries a sweep when **both** adjacent clips are at least as long as the sweep
-itself (~1.5s). Otherwise the sweep would run past the clip on the far side, or collide
-with the sweep on the other end of it. Such cuts render bare, with a warning, rather than
-failing.
+A cut only carries the selected sweep when **both** adjacent clips are at least as long
+as that sweep (the bundled one is ~1.5s). Otherwise the sweep would run past the clip
+on the far side, or collide with the sweep on the other end of it. Such cuts render bare,
+with a warning, rather than failing.
 
 That test is on the two adjacent clips alone, never on where the cut lands in the finished
 movie — which is what lets the decision survive group rendering unchanged.
