@@ -63,8 +63,10 @@ def test_the_bundled_sweep_measures_as_expected():
 def test_disjoint_alpha_sweep_places_the_cut_under_an_opaque_frame(make_media, tmp_path):
     """Decode actual alpha, then place that same sweep over a rendered hard cut."""
     alpha = [255, 0, 0, 0, 255]
+    # Match the output aspect ratio: padding a square sweep with transparent
+    # pixels lowers its mean alpha below COVER_THRESHOLD, even on opaque frames.
     for index, value in enumerate(alpha):
-        Image.new("RGBA", (32, 32), (255, 0, 0, value)).save(
+        Image.new("RGBA", (320, 240), (255, 0, 0, value)).save(
             tmp_path / f"sweep-{index:02d}.png"
         )
     path = tmp_path / "disjoint.mov"
