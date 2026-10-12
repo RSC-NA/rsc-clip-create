@@ -133,8 +133,8 @@ def cover_frame(alpha_by_frame: Sequence[int], *, threshold: int = COVER_THRESHO
     ``alpha_by_frame`` is one mean-alpha value per frame. A stinger ramps in
     from transparent, holds fully opaque for a while, then breaks away, so the
     cut belongs in the middle of that opaque span -- the moment the picture is
-    most thoroughly hidden.
-
+    most thoroughly hidden. If covered spans are disjoint, choose a covered
+    frame nearest the midpoint of their outer endpoints, not a gap between them.
     A sweep that never fully covers (no alpha channel, or a subtle overlay)
     falls back to its own midpoint. That still cuts under the busiest part of
     the animation, which is the best available guess.
@@ -149,4 +149,5 @@ def cover_frame(alpha_by_frame: Sequence[int], *, threshold: int = COVER_THRESHO
             max(alpha_by_frame),
         )
         return len(alpha_by_frame) // 2
-    return (covered[0] + covered[-1]) // 2
+    midpoint = (covered[0] + covered[-1]) // 2
+    return min(covered, key=lambda index: abs(index - midpoint))

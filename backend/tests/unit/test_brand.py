@@ -125,6 +125,23 @@ def test_an_off_centre_covered_span_still_cuts_inside_it():
     assert alpha[frame] >= COVER_THRESHOLD
 
 
+def test_disjoint_opaque_frames_never_put_the_cut_on_transparency():
+    disjoint = [255, 0, 0, 0, 255]
+    cut = cover_frame(disjoint)
+    assert cut in (0, 4)
+    assert disjoint[cut] >= COVER_THRESHOLD
+
+    # Keep the midpoint of a continuous covered span, and the fallback when
+    # the sweep has no sufficiently opaque frame at all.
+    assert cover_frame([0, 255, 255, 255, 0]) == 2
+    assert cover_frame([0, 40, 90, 120, 90, 40, 0]) == 3
+
+
+def test_a_disjoint_span_with_a_transparent_midpoint_chooses_coverage():
+    alpha = [0, 255, 255, 0, 0, 255, 0]
+    assert alpha[cover_frame(alpha)] >= COVER_THRESHOLD
+
+
 def test_a_nearly_opaque_frame_counts_as_covered():
     """The threshold is not 255. A replacement sweep with a soft edge or one
     stray transparent pixel scores a point or two below it and must not be
