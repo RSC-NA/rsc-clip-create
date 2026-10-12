@@ -18,6 +18,8 @@ logger = logging.getLogger("backend.app.worker")
 IDLE_SLEEP_SECONDS = 2
 ERROR_BACKOFF_SECONDS = 5
 STARTUP_RETRY_SECONDS = 3
+STALE_SWEEP_INTERVAL_SECONDS = 30
+
 
 _shutdown = False
 
@@ -68,10 +70,16 @@ def main() -> None:
     logger.info("render worker starting")
     _install_signal_handlers()
     _recover_stale_jobs()
+    next_stale_sweep = time.monotonic() + STALE_SWEEP_INTERVAL_SECONDS
 
     while not _shutdown:
         try:
             with SessionLocal() as db:
+                if time.monotonic() >= next_stale_sweep:
+                    recovered = requeue_stale_jobs(db)
+                    if recovered:
+                        logger.info("requeued %d stale job(s) during worker loop", recovered)
+                    next_stale_sweep = time.monotonic() + STALE_SWEEP_INTERVAL_SECONDS
                 processed = process_next_job(db)
         except KeyboardInterrupt:
             logger.info("render worker stopping")
