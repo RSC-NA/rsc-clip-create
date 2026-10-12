@@ -275,67 +275,68 @@ def test_a_sweep_survives_being_placed_at_the_front_of_a_group():
     assert placed[0].start >= 0
 
 
+def _stub_two_clip_render(tmp_path, monkeypatch, probe):
+    """Keep the render_movie entry point real while replacing costly ffmpeg passes."""
+    from backend.app.filename_parser import ParsedClipName
+    from backend.app.services import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module, "load_sweep", lambda options: None)
+    monkeypatch.setattr(
+        renderer_module, "normalize_clip",
+        lambda spec, destination, workdir, options: Segment(destination, 60),
+    )
+
+    def join(segments, boundaries, output, options, workdir, **kwargs):
+        output.write_bytes(b"nonempty output")
+
+    def final_probe(path):
+        assert path.name == "output.mp4"
+        assert path.read_bytes() == b"nonempty output"
+        assert not (tmp_path / "out.mp4").exists(), "the file was published before verification"
+        return probe
+
+    monkeypatch.setattr(renderer_module, "join_segments", join)
+    monkeypatch.setattr(renderer_module, "probe_media", final_probe)
+    return [
+        renderer_module.ClipSpec(
+            source=tmp_path / f"source-{index}.mp4",
+            name=ParsedClipName("Falcons", f"player{index}", "Gold", "mp4"),
+        )
+        for index in range(2)
+    ]
+
+
 @pytest.mark.parametrize(
     "probe",
     [
-        {"duration": 2.0, "has_video": False, "has_audio": True, "nb_frames": 60},
-        {"duration": 2.0, "has_video": True, "has_audio": False, "nb_frames": 60},
-        {"duration": 2.0, "has_video": True, "has_audio": True, "nb_frames": 59},
-        {"duration": 2.0, "has_video": True, "has_audio": True, "nb_frames": None},
+        {"duration": None, "has_video": True, "has_audio": True, "nb_frames": 120},
+        {"duration": 4.0, "has_video": False, "has_audio": True, "nb_frames": 120},
+        {"duration": 4.0, "has_video": True, "has_audio": False, "nb_frames": 120},
+        {"duration": 4.0, "has_video": True, "has_audio": True, "nb_frames": 119},
+        {"duration": 4.0, "has_video": True, "has_audio": True, "nb_frames": None},
     ],
-    ids=["no-video", "no-audio", "short-video", "unknown-frame-count"],
+    ids=["no-duration", "no-video", "no-audio", "short-video", "unknown-frame-count"],
 )
 def test_render_movie_rejects_unverified_final_output(tmp_path, monkeypatch, probe):
-    """A nonempty output with a duration alone is not proof of a complete movie."""
-    from backend.app.filename_parser import ParsedClipName
+    """Failed verification must discard the scratch MP4, not publish it."""
     from backend.app.services import renderer as renderer_module
 
-    monkeypatch.setattr(renderer_module, "load_sweep", lambda options: None)
-    monkeypatch.setattr(
-        renderer_module, "normalize_clip",
-        lambda spec, destination, workdir, options: Segment(destination, 60),
-    )
-
-    def join(segments, boundaries, output, options, workdir, **kwargs):
-        output.write_bytes(b"nonempty output")
-
-    monkeypatch.setattr(renderer_module, "join_segments", join)
-    monkeypatch.setattr(renderer_module, "probe_media", lambda path: probe)
-    clip = renderer_module.ClipSpec(
-        source=tmp_path / "source.mp4",
-        name=ParsedClipName("Falcons", "Ace", "Gold", "mp4"),
-    )
-
+    clips = _stub_two_clip_render(tmp_path, monkeypatch, probe)
+    output = tmp_path / "out.mp4"
     with pytest.raises(RenderError) as caught:
-        renderer_module.render_movie([clip], tmp_path / "out.mp4", OPTIONS)
+        renderer_module.render_movie(clips, output, OPTIONS)
     assert caught.value.stage == "verify"
-    assert (tmp_path / "out.mp4").read_bytes() == b"nonempty output"
+    assert not output.exists()
 
 
 def test_render_movie_reports_verified_final_frames(tmp_path, monkeypatch):
-    from backend.app.filename_parser import ParsedClipName
     from backend.app.services import renderer as renderer_module
 
-    monkeypatch.setattr(renderer_module, "load_sweep", lambda options: None)
-    monkeypatch.setattr(
-        renderer_module, "normalize_clip",
-        lambda spec, destination, workdir, options: Segment(destination, 60),
+    clips = _stub_two_clip_render(
+        tmp_path, monkeypatch,
+        {"duration": 4.0, "has_video": True, "has_audio": True, "nb_frames": 120},
     )
-
-    def join(segments, boundaries, output, options, workdir, **kwargs):
-        output.write_bytes(b"nonempty output")
-
-    monkeypatch.setattr(renderer_module, "join_segments", join)
-    monkeypatch.setattr(
-        renderer_module, "probe_media",
-        lambda path: {"duration": 2.0, "has_video": True, "has_audio": True, "nb_frames": 60},
-    )
-    clip = renderer_module.ClipSpec(
-        source=tmp_path / "source.mp4",
-        name=ParsedClipName("Falcons", "Ace", "Gold", "mp4"),
-    )
-
-    media = renderer_module.render_movie([clip], tmp_path / "out.mp4", OPTIONS)
-    assert media["frames"] == media["nb_frames"] == 60
-    assert media["expected_duration"] == 2.0
+    media = renderer_module.render_movie(clips, tmp_path / "out.mp4", OPTIONS)
+    assert media["frames"] == media["nb_frames"] == 120
+    assert media["expected_duration"] == 4.0
     assert (tmp_path / "out.mp4").read_bytes() == b"nonempty output"
