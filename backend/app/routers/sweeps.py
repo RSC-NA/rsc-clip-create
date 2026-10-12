@@ -15,7 +15,7 @@ from backend.app.deps import get_current_user
 from backend.app.models import BrandSweep, User
 from backend.app.schemas import BrandSweepResponse
 from backend.app.services import brand
-from backend.app.storage import UploadTooLarge, probe_media, safe_upload_name, save_upload
+from backend.app.storage import MAX_FILENAME_BYTES, UploadTooLarge, probe_media, safe_upload_name, save_upload
 
 
 logger = logging.getLogger(__name__)
@@ -75,10 +75,17 @@ def upload_brand_sweep(
             ),
         )
 
+    storage_name = safe_upload_name(str(uuid.uuid4()), file.filename, "brand-sweep.mov")
+    if len(storage_name.encode("utf-8")) > MAX_FILENAME_BYTES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{file.filename}: filename is too long for sweep storage.",
+        )
+
     try:
         destination = save_upload(
             file,
-            safe_upload_name(str(uuid.uuid4()), file.filename, "brand-sweep.mov"),
+            storage_name,
             folder="sweeps",
             max_bytes=settings.max_brand_sweep_bytes,
         )
