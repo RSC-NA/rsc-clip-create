@@ -211,6 +211,69 @@ def test_an_over_budget_request_is_rejected_before_anything_is_written(
     assert list((isolated_storage / "clips").iterdir()) == []
 
 
+@pytest.mark.parametrize("chunked", [False, True], ids=["declared", "chunked"])
+def test_over_budget_multipart_batch_is_rejected_without_partial_clips(
+    client, db_session, isolated_storage, monkeypatch, chunked
+):
+    """Count multipart headers and boundaries too, not just the file contents."""
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda *args, **kwargs: {"has_video": True, "duration": 1.0}
+    )
+    payload = b"x" * 4096
+    prepared = client.build_request(
+        "POST",
+        "/api/v1/clips",
+        files=[
+            ("files", ("Falcons-Ace-Gold.mp4", payload, "video/mp4")),
+            ("files", ("Ravens-Bo-Silver.mp4", payload, "video/mp4")),
+        ],
+    )
+    body = prepared.read()
+    # Both files, even combined, fit. Only the encoded request exceeds the cap.
+    budget = len(payload) * 2 + 128
+    assert len(payload) * 2 < budget < len(body)
+    monkeypatch.setattr(clips_router.settings, "max_upload_bytes", budget)
+
+    headers = {"content-type": prepared.headers["content-type"]}
+    if chunked:
+        # An iterator makes httpx omit Content-Length and send chunked data.
+        content = iter([body[:4096], body[4096:]])
+    else:
+        headers["content-length"] = str(len(body))
+        content = body
+    response = client.post("/api/v1/clips", content=content, headers=headers)
+
+    assert response.status_code == 413, response.text
+    assert "limit is" in response.json()["detail"]
+    assert db_session.query(Clip).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_chunked_multipart_at_request_budget_succeeds(client, db_session, isolated_storage, monkeypatch):
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda *args, **kwargs: {"has_video": True, "duration": 1.0}
+    )
+    prepared = client.build_request(
+        "POST", "/api/v1/clips",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"valid clip", "video/mp4"))],
+    )
+    body = prepared.read()
+    monkeypatch.setattr(clips_router.settings, "max_upload_bytes", len(body))
+
+    response = client.post(
+        "/api/v1/clips", content=iter([body[:50], body[50:]]),
+        headers={"content-type": prepared.headers["content-type"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert db_session.query(Clip).count() == 1
+    assert len(list((isolated_storage / "clips").iterdir())) == 1
+
+
 def test_the_advertised_upload_budget_is_at_least_one_clip(client):
     """A per-clip limit above the per-request budget would be unusable."""
     body = client.get("/api/v1/config").json()
