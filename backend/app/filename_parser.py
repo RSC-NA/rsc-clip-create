@@ -14,11 +14,13 @@ DEFAULT_EXTENSIONS = frozenset({"mp4", "mov", "webm", "m4v", "avi", "mkv"})
 _SEGMENT = r"[^-./\\]+"
 _EXTENSION = r"[A-Za-z0-9]+"
 
-# Served to the browser by GET /api/v1/config. Deliberately free of named
-# groups: Python spells them (?P<name>) and JavaScript spells them (?<name>),
-# so a Python pattern handed to `new RegExp` throws "Invalid group" and takes
-# the page down with it.
-CLIENT_FILENAME_PATTERN = rf"^{_SEGMENT}-{_SEGMENT}-{_SEGMENT}\.{_EXTENSION}$"
+# Served to the browser by GET /api/v1/config. Require a non-whitespace
+# character within each segment: the upload parser strips segments before
+# rejecting empty ones. The lookahead stops at a segment delimiter, while the
+# consuming class still permits leading/trailing whitespace. Keep this free of
+# Python named groups so it can be compiled by JavaScript's RegExp.
+_CLIENT_SEGMENT = rf"(?=[^-./\\]*[^\s\-./\\]){_SEGMENT}"
+CLIENT_FILENAME_PATTERN = rf"^{_CLIENT_SEGMENT}-{_CLIENT_SEGMENT}-{_CLIENT_SEGMENT}\.{_EXTENSION}$"
 
 FILENAME_RE = re.compile(
     rf"^(?P<team>{_SEGMENT})-(?P<player>{_SEGMENT})-(?P<tier>{_SEGMENT})"
