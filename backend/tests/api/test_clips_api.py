@@ -45,6 +45,52 @@ def test_nothing_is_written_when_a_filename_is_rejected(client, isolated_storage
     assert db_session.query(Clip).count() == 0
 
 
+@pytest.mark.parametrize(
+    "name",
+    [
+        f"{'x' * 80}-{'y' * 80}-{'z' * 53}.mp4",  # 219 + 37 prefix = 256 bytes
+        f"{'é' * 80}-{'y' * 60}-{'z' * 20}.mp4",  # 80 chars, 160 UTF-8 bytes in team
+    ],
+)
+def test_overlong_prefixed_clip_name_is_rejected_before_writing(
+    client, isolated_storage, db_session, monkeypatch, name
+):
+    from backend.app.routers import clips as clips_router
+
+    def unexpected_save(*args, **kwargs):
+        pytest.fail("preflight must reject the filename before opening a destination")
+
+    monkeypatch.setattr(clips_router, "save_upload", unexpected_save)
+    response = _upload(client, name)
+
+    assert response.status_code == 400, response.text
+    assert "too long" in response.json()["detail"]
+    assert db_session.query(Clip).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_overlong_name_in_batch_rejects_before_saving_any_file(
+    client, isolated_storage, db_session, monkeypatch
+):
+    from backend.app.routers import clips as clips_router
+
+    def unexpected_save(*args, **kwargs):
+        pytest.fail("preflight must validate the whole batch before saving")
+
+    monkeypatch.setattr(clips_router, "save_upload", unexpected_save)
+    response = client.post(
+        "/api/v1/clips",
+        files=[
+            ("files", ("Falcons-Ace-Gold.mp4", b"first", "video/mp4")),
+            ("files", (f"{'x' * 80}-{'y' * 80}-{'z' * 53}.mp4", b"second", "video/mp4")),
+        ],
+    )
+
+    assert response.status_code == 400, response.text
+    assert db_session.query(Clip).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
 def test_an_unreadable_file_is_rejected_and_cleaned_up(client, isolated_storage, db_session):
     """The name is valid, so it reaches disk; ffprobe then rejects it."""
     response = _upload(client, "Falcons-Ace-Gold.mp4", b"still not a video")
@@ -59,7 +105,7 @@ def test_empty_upload_is_rejected(client):
 
 
 @requires_ffmpeg
-def test_a_real_clip_uploads_and_parses_its_metadata(client, make_media, db_session):
+def test_a_real_clip_uploads_and_parses_its_metadata(client, make_media, db_session, isolated_storage):
     media = make_media("Falcons-Ace-Gold.mp4", seconds=1)
     response = client.post(
         "/api/v1/clips",
@@ -72,6 +118,10 @@ def test_a_real_clip_uploads_and_parses_its_metadata(client, make_media, db_sess
     assert (body[0]["team"], body[0]["player"], body[0]["tier"]) == ("Falcons", "Ace", "Gold")
     assert body[0]["durationSeconds"] == pytest.approx(1.0, abs=0.3)
     assert db_session.query(Clip).count() == 1
+    written = list((isolated_storage / "clips").iterdir())
+    assert len(written) == 1
+    assert written[0].name.endswith("-Falcons-Ace-Gold.mp4")
+    assert written[0].stat().st_size > 0
 
 
 @requires_ffmpeg

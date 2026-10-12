@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 STORAGE_FOLDERS = ("clips", "renders", "sweeps")
+MAX_FILENAME_BYTES = 255  # filesystem component limit, including the UUID prefix
 _COPY_CHUNK = 1024 * 1024
 
 

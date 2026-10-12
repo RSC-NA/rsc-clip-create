@@ -14,7 +14,14 @@ from backend.app.config import get_settings
 from backend.app.filename_parser import parse_clip_filename
 from backend.app.models import Clip, Movie, MovieSlot, RenderJobClipResult, User
 from backend.app.schemas import ClipResponse
-from backend.app.storage import ProbeError, UploadTooLarge, probe_media, safe_upload_name, save_upload
+from backend.app.storage import (
+    MAX_FILENAME_BYTES,
+    ProbeError,
+    UploadTooLarge,
+    probe_media,
+    safe_upload_name,
+    save_upload,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -75,11 +82,21 @@ def upload_clips(
         raise HTTPException(status_code=400, detail=f"Upload no more than {settings.max_clip_count} clips.")
 
     parsed_files = []
+    storage_names = []
     for file in files:
         try:
             parsed_files.append(parse_clip_filename(file.filename or "", settings.supported_extensions))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"{file.filename}: {exc}") from exc
+        # Validate the actual name that will be written, not the unprefixed
+        # upload name. Do this for every file before opening any destination.
+        storage_name = safe_upload_name(str(uuid.uuid4()), file.filename, "clip.mp4")
+        if len(storage_name.encode("utf-8")) > MAX_FILENAME_BYTES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{file.filename}: filename is too long for clip storage.",
+            )
+        storage_names.append(storage_name)
 
     saved_clips: list[Clip] = []
     created_paths: list[Path] = []
@@ -89,13 +106,13 @@ def upload_clips(
             path.unlink(missing_ok=True)
         return HTTPException(status_code=400, detail=detail)
 
-    for file, parsed in zip(files, parsed_files):
+    for file, parsed, storage_name in zip(files, parsed_files, storage_names):
         try:
             # The size limit is enforced while streaming, not after the whole
             # file has already been written to disk.
             destination = save_upload(
                 file,
-                safe_upload_name(str(uuid.uuid4()), file.filename, "clip.mp4"),
+                storage_name,
                 max_bytes=settings.max_clip_size_bytes,
             )
         except UploadTooLarge:
