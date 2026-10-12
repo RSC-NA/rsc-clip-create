@@ -16,7 +16,7 @@ export default async function EditMoviePage({
   return (
     <main className="page-shell page-grid">
       <PageHeader
-        description="Place clips in order, add or remove positions in the sequence, and choose how each cut transitions."
+        description="Place clips in order, and add or remove positions in the sequence. Every cut is covered by the brand sweep."
         eyebrow="Editor"
         title={movie.title}
       />
@@ -27,9 +27,6 @@ export default async function EditMoviePage({
         initialSlots={movie.slots}
         minClipCount={config.minClipCount}
         movieId={movie.id}
-        transitionHoldSeconds={movie.transitionHoldSeconds}
-        transitionStyle={movie.transitionStyle}
-        transitionStyles={movie.transitionStyles}
       />
     </main>
   );

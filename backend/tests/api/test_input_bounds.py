@@ -61,20 +61,19 @@ def test_an_overlong_filename_segment_is_rejected(client, db_session, segment):
     assert db_session.query(Clip).count() == 0
 
 
-def test_an_oversize_logo_dimension_is_rejected(client, db_session, monkeypatch):
-    from backend.app.routers import logos as logos_router
+def test_an_oversize_brand_sweep_is_rejected(client, db_session, monkeypatch):
+    """The limit is enforced during the write, not after it -- buffering a
+    200MB upload to measure it lets a caller fill the disk first."""
+    from backend.app.routers import sweeps as sweeps_router
 
-    monkeypatch.setattr(logos_router.settings, "max_logo_dimension", 64)
-    buffer = io.BytesIO()
-    Image.new("RGBA", (256, 256), (255, 0, 0, 255)).save(buffer, format="PNG")
+    monkeypatch.setattr(sweeps_router.settings, "max_brand_sweep_bytes", 64)
 
     response = client.post(
-        "/api/v1/logos",
-        data={"team": "Falcons"},
-        files=[("file", ("logo.png", buffer.getvalue(), "image/png"))],
+        "/api/v1/sweeps",
+        files=[("file", ("sweep.mov", b"x" * 4096, "video/quicktime"))],
     )
     assert response.status_code == 400
-    assert "maximum is" in response.json()["detail"]
+    assert "byte limit" in response.json()["detail"]
 
 
 def test_too_many_clips_is_refused_at_queue_time(client, db_session, make_movie, make_clip, monkeypatch):

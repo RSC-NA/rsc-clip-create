@@ -10,8 +10,7 @@ from sqlalchemy.orm import Session, selectinload
 from backend.app.config import get_settings
 from backend.app.filename_parser import ParsedClipName
 from backend.app.models import Clip, Movie, RenderJob, RenderJobAttempt, RenderJobClipResult, Video
-from backend.app.routers.logos import resolve_brand_logo
-from backend.app.services import brand
+from backend.app.routers.sweeps import resolve_brand_sweep
 from backend.app.services.renderer import ClipSpec, RenderError, RenderOptions, render_movie
 from backend.app.storage import output_path
 
@@ -125,26 +124,21 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             "rendering job_id=%s attempt_id=%s clips=%d -> %s",
             job.id, attempt.id, len(selected), destination,
         )
-        hold_seconds = (
-            movie.transition_hold_seconds
-            if movie.transition_hold_seconds is not None
-            else settings.render_sting_hold_seconds
-        )
         options = RenderOptions(
             movie_id=movie.id,
             fps=settings.render_fps,
             width=settings.render_width,
             height=settings.render_height,
-            hold_frames=max(0, round(hold_seconds * settings.render_fps)),
-            blend_frames=settings.render_blend_frames,
-            family=movie.transition_style or settings.render_transition_style,
-            sting_logo_path=resolve_brand_logo(db, movie.user_id),
-            sting_logo_scale=settings.render_sting_logo_scale,
+            # The account's own sweep wins, then the configured override, then
+            # the sweep bundled in the image. None at every step is fine: the
+            # renderer reads it as "use the bundled one".
+            sweep_path=(
+                resolve_brand_sweep(db, movie.user_id)
+                or settings.render_brand_sweep_path
+            ),
             font_path=settings.render_font_path,
             font_size=settings.render_font_size,
             stroke_width=settings.render_label_stroke_width,
-            blue=settings.render_brand_blue,
-            orange=settings.render_brand_orange,
         )
         def touch_heartbeat() -> None:
             # heartbeat_at was written once at claim time and never again, so a

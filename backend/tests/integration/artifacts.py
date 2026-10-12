@@ -1,8 +1,8 @@
 """Write render artifacts a human can actually look at.
 
 Numeric assertions catch drift in the arithmetic. They cannot catch a label in
-the wrong place, a logo that failed to composite, or a sting that came out the
-wrong colour -- so the sample run also extracts frames and indexes them.
+the wrong place, or a sweep that landed a beat off its cut and left the join
+showing -- so the sample run also extracts frames and indexes them.
 """
 
 from __future__ import annotations
@@ -38,20 +38,24 @@ def extract_frame(video: Path, at_seconds: float, destination: Path) -> Path | N
     return destination if result.returncode == 0 and destination.exists() else None
 
 
-def frame_plan(clip_frames: list[int], hold_frames: int, fps: int) -> list[tuple[str, float]]:
-    """Midpoints of each clip and each sting, in output-timeline seconds.
+def frame_plan(clip_frames: list[int], fps: int) -> list[tuple[str, float]]:
+    """Midpoints of each clip, and the cut between each pair, in seconds.
 
-    Mirrors the renderer's own accounting: each boundary adds `hold` frames, so
-    clip k starts at sum(previous clips) + k*hold.
+    Mirrors the renderer's own accounting, which is now simply cumulative: the
+    sweep is overlaid on the join and adds nothing to the timeline, so clip k
+    starts at the sum of the clips before it.
+
+    The frame sampled at a cut is the interesting one -- the sweep should be
+    covering the picture completely there. If the clips are visible in it, the
+    sweep has drifted off its cut.
     """
     marks: list[tuple[str, float]] = []
     running = 0
     for index, frames in enumerate(clip_frames):
         marks.append((f"clip-{index}", (running + frames / 2) / fps))
         running += frames
-        if index < len(clip_frames) - 1 and hold_frames:
-            marks.append((f"sting-{index}", (running + hold_frames / 2) / fps))
-            running += hold_frames
+        if index < len(clip_frames) - 1:
+            marks.append((f"cut-{index}", running / fps))
     return marks
 
 
@@ -98,8 +102,8 @@ def write_report(
 <tbody>{rows}</tbody></table>
 <h2>Output</h2><video controls src="render.mp4"></video>
 <h2>Frames</h2>
-<p>One from the middle of each clip (check the label and logo) and one from the
-middle of each sting (check the colour and direction).</p>
+<p>One from the middle of each clip (check the label) and one at each cut,
+where the sweep should be covering the picture completely.</p>
 <div class="grid">{tiles}</div>
 </body></html>""",
         encoding="utf-8",

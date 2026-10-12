@@ -7,8 +7,8 @@ import type {
   AdminUser,
   AdminVideo,
   AppSession,
+  BrandSweep,
   ClientConfig,
-  Logo,
   MovieDetail,
   MovieSummary,
   RenderJob,
@@ -93,8 +93,8 @@ export async function getJob(jobId: string) {
   return request<RenderJob>(`/jobs/${jobId}`);
 }
 
-export async function getBrandLogo() {
-  return request<Logo | null>("/logos");
+export async function getBrandSweep() {
+  return request<BrandSweep | null>("/sweeps");
 }
 
 export async function getClientConfig() {

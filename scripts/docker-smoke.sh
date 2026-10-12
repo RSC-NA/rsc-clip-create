@@ -54,8 +54,7 @@ MOVIE="$(curl -fsS -X POST "$WEB/api/backend/movies" -H 'content-type: applicati
 curl -fsS -X PUT "$WEB/api/backend/movies/$MOVIE/timeline" -H 'content-type: application/json' \
   -d "{\"slots\":[
         {\"id\":null,\"sort_index\":0,\"clip_id\":\"$CLIP_A\",\"overlay_text\":\"\"},
-        {\"id\":null,\"sort_index\":1,\"clip_id\":\"$CLIP_B\",\"overlay_text\":\"\"}],
-      \"transition_style\":\"sweep\",\"transition_hold_seconds\":0.6}" >/dev/null
+        {\"id\":null,\"sort_index\":1,\"clip_id\":\"$CLIP_B\",\"overlay_text\":\"\"}]}" >/dev/null
 echo "   movie $MOVIE"
 
 step "Queueing the render"
@@ -84,8 +83,9 @@ DURATION="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$WORK/ou
 SIZE="$(wc -c <"$WORK/out.mp4" | tr -d ' ')"
 python3 - "$DURATION" <<'PY'
 import sys
-# two 2s clips plus one 0.6s hold
-expected, actual = 4.6, float(sys.argv[1])
+# Two 2s clips. The brand sweep is overlaid on the cut rather than spliced
+# into it, so a transition adds nothing to the running time.
+expected, actual = 4.0, float(sys.argv[1])
 if abs(actual - expected) > 0.1:
     raise SystemExit(f"smoke: expected ~{expected}s, got {actual}s")
 PY

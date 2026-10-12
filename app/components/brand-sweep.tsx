@@ -1,28 +1,35 @@
 "use client";
 
-import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { useState, useTransition } from "react";
 import { readApiError } from "@/app/lib/api-error";
 import { browserApiPath } from "@/app/lib/browser-api";
-import type { Logo } from "@/app/lib/types";
+import type { BrandSweep as BrandSweepFile } from "@/app/lib/types";
 
-export function BrandLogo({ logo }: { logo: Logo | null }) {
+export function BrandSweep({
+  sweep,
+  supportedFormats,
+}: {
+  sweep: BrandSweepFile | null;
+  supportedFormats: string[];
+}) {
   const router = useRouter();
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
+  const accept = supportedFormats.map((format) => `.${format}`).join(",");
+
   function upload() {
     startTransition(async () => {
       setError(null);
       try {
-        if (!file) throw new Error("Choose an image file.");
+        if (!file) throw new Error("Choose a video file.");
 
         const body = new FormData();
         body.append("file", file);
 
-        const response = await fetch(browserApiPath("/logos"), {
+        const response = await fetch(browserApiPath("/sweeps"), {
           method: "POST",
           body,
         });
@@ -32,25 +39,25 @@ export function BrandLogo({ logo }: { logo: Logo | null }) {
         router.refresh();
       } catch (caught) {
         setError(
-          caught instanceof Error ? caught.message : "Failed to upload the logo.",
+          caught instanceof Error ? caught.message : "Failed to upload the sweep.",
         );
       }
     });
   }
 
   function remove() {
-    if (!logo) return;
+    if (!sweep) return;
     startTransition(async () => {
       setError(null);
       try {
-        const response = await fetch(browserApiPath(`/logos/${logo.id}`), {
+        const response = await fetch(browserApiPath(`/sweeps/${sweep.id}`), {
           method: "DELETE",
         });
         if (!response.ok) throw await readApiError(response);
         router.refresh();
       } catch (caught) {
         setError(
-          caught instanceof Error ? caught.message : "Failed to remove the logo.",
+          caught instanceof Error ? caught.message : "Failed to remove the sweep.",
         );
       }
     });
@@ -60,27 +67,40 @@ export function BrandLogo({ logo }: { logo: Logo | null }) {
     <div className="page-grid">
       <section className="panel stack-md">
         <div className="stack-sm">
-          <span className="eyebrow">Current logo</span>
+          <span className="eyebrow">Current sweep</span>
           <p className="text-soft">
-            Shown in the centre of every transition. Movies without one render
-            plain sweeps.
+            Played over every cut between clips. The clips cut while the sweep
+            covers the picture, so it hides the join and costs the movie no
+            extra running time.
           </p>
         </div>
 
-        {logo ? (
+        {sweep ? (
           <div className="row-between">
-            <Image
-              alt="Brand logo"
-              height={120}
-              src={browserApiPath(`/logos/${logo.id}/file`)}
-              style={{ objectFit: "contain", background: "#0b1220", borderRadius: 8 }}
-              unoptimized
-              width={220}
+            {/* Muted and looping: a one-second transition being inspected,
+                not something anyone wants to sit through with sound. */}
+            <video
+              autoPlay
+              loop
+              muted
+              playsInline
+              src={browserApiPath(`/sweeps/${sweep.id}/file`)}
+              style={{
+                background: "#0b1220",
+                borderRadius: 8,
+                maxWidth: 320,
+                width: "100%",
+              }}
             />
             <div className="stack-sm">
-              <span className="text-soft">{logo.originalName}</span>
+              <span className="text-soft">{sweep.originalName}</span>
+              {sweep.durationSeconds != null ? (
+                <span className="text-soft">
+                  {sweep.durationSeconds.toFixed(2)}s
+                </span>
+              ) : null}
               <button
-                aria-label="Remove the brand logo"
+                aria-label="Remove the brand sweep"
                 className="button button-secondary"
                 disabled={isPending}
                 onClick={remove}
@@ -92,25 +112,27 @@ export function BrandLogo({ logo }: { logo: Logo | null }) {
           </div>
         ) : (
           <div className="empty-state">
-            No brand logo yet. Transitions render without a mark.
+            Using the bundled sweep. Upload one here to replace it.
           </div>
         )}
       </section>
 
       <section className="panel stack-md">
         <div className="stack-sm">
-          <span className="eyebrow">{logo ? "Replace it" : "Upload one"}</span>
+          <span className="eyebrow">{sweep ? "Replace it" : "Upload one"}</span>
           <p className="text-soft">
-            PNG with transparency works best. Uploading replaces whatever is
-            already there.
+            A stinger with an alpha channel, {supportedFormats.join(", ")}. It
+            should start transparent, cover the frame completely somewhere in
+            the middle — that is where the clips cut — and clear again by the
+            end. Any audio on it is ignored.
           </p>
         </div>
 
         <div className="field">
-          <label htmlFor="logo-file">Image</label>
+          <label htmlFor="sweep-file">Video</label>
           <input
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            id="logo-file"
+            accept={accept}
+            id="sweep-file"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             type="file"
           />
@@ -129,7 +151,7 @@ export function BrandLogo({ logo }: { logo: Logo | null }) {
             onClick={upload}
             type="button"
           >
-            {isPending ? "Uploading..." : logo ? "Replace Logo" : "Save Logo"}
+            {isPending ? "Uploading..." : sweep ? "Replace Sweep" : "Save Sweep"}
           </button>
         </div>
       </section>

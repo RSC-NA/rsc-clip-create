@@ -1,14 +1,20 @@
 """Two-pass FFmpeg renderer.
 
 Pass 1 normalizes every clip to one profile and burns its label. Pass 2 joins
-the normalized clips with generated blue/orange brand stings in a single
-filter graph.
+the normalized clips with hard cuts and overlays the brand sweep across each
+one, so the cut lands while the sweep hides the picture completely.
 
-All timing is planned in INTEGER FRAMES, never floating-point seconds. xfade
-snaps its offsets to frame boundaries while acrossfade is sample-exact, so a
-plan expressed in seconds drifts audio away from video a little at every
-boundary and the error accumulates. At 30fps/48kHz one frame is exactly 1600
-samples, so a frame-based plan is simultaneously exact for both streams.
+The sweep is a stinger with an alpha channel: transparent, ramping up to fully
+opaque, then breaking away again. It is composited ON TOP of the joined
+timeline rather than spliced into it, which is why a movie's length is exactly
+the sum of its clips -- a transition costs no time. Splicing it in as its own
+segment, the way the old generated wedge card was, would flatten its
+transparent head and tail onto black and dip the picture at every join.
+
+All timing is planned in INTEGER FRAMES, never floating-point seconds. Frame
+counts are what ``trim=end_frame`` and ``tpad=start`` take, and at 30fps/48kHz
+one frame is exactly 1600 samples, so a frame-based plan is simultaneously
+exact for video and audio.
 """
 
 from __future__ import annotations
@@ -50,22 +56,20 @@ class RenderOptions:
     fps: int = 30
     width: int = 1920
     height: int = 1080
-    hold_frames: int = 18
-    blend_frames: int = 9
-    family: str = brand.DEFAULT_FAMILY
-    # Centred in every sting. Replaces the movie-title wordmark that used to
-    # sit there, and the per-team marks that used to sit on the clip labels.
-    sting_logo_path: Path | None = None
-    sting_logo_scale: float = 0.34
+    # The stinger overlaid across every cut. None means the bundled sweep;
+    # an account that has uploaded its own passes that path instead.
+    sweep_path: Path | None = None
     font_path: Path | None = None
     font_size: int = 56
     stroke_width: int = 3
-    blue: str = "#0B5CD5"
-    orange: str = "#FF7A18"
 
     @property
     def samples_per_frame(self) -> int:
         return 48000 // self.fps
+
+    @property
+    def sweep(self) -> Path:
+        return self.sweep_path or brand.BUNDLED_SWEEP
 
 
 @dataclass(frozen=True)
@@ -74,26 +78,44 @@ class Segment:
     frames: int
 
 
+@dataclass(frozen=True)
+class Sweep:
+    """The brand sweep, measured against the output profile."""
+
+    path: Path
+    frames: int
+    # The frame within the sweep where it hides the picture, and so where the
+    # clips cut. Everything before it overlays the outgoing clip; everything
+    # from it on overlays the incoming one.
+    cover: int
+
+    @property
+    def lead_frames(self) -> int:
+        """How much of the outgoing clip the sweep covers."""
+        return self.cover
+
+    @property
+    def tail_frames(self) -> int:
+        """How much of the incoming clip the sweep covers."""
+        return self.frames - self.cover
+
+
 @dataclass
 class Boundary:
-    """One join between two clips, with its timing already resolved to frames."""
+    """One cut between two clips, with the sweep that hides it."""
 
     index: int
-    blend_frames: int
-    hold_frames: int
-    sting_offset: int = 0            # xfade offset, clip -> sting
-    clip_offset: int = 0             # xfade offset, sting -> next clip
-    spec: brand.StingSpec | None = None
-    png: Path | None = None
-    clip: Path | None = None
+    sweep: Sweep | None = None
+    # Frame in the joined timeline where the sweep starts. None until
+    # place_boundaries resolves it against the segment list being joined --
+    # deciding a boundary and placing it are separate steps, and a placement
+    # is only meaningful against one particular list.
+    start: int | None = None
 
     @property
     def hard_cut(self) -> bool:
-        return self.spec is None
-
-    @property
-    def sting_frames(self) -> int:
-        return self.hold_frames + 2 * self.blend_frames
+        """A cut with no sweep over it. Adjacent clips were too short."""
+        return self.sweep is None
 
 
 def _frames_to_seconds(frames: int, fps: int) -> str:
@@ -214,21 +236,132 @@ def normalize_clip(
 
 
 # --------------------------------------------------------------------------
+# The sweep
+# --------------------------------------------------------------------------
+def sweep_chain(options: RenderOptions) -> str:
+    """Bring the sweep to the output profile, keeping its alpha.
+
+    Shared by the alpha measurement and the join graph so the two cannot drift:
+    the frame indices ``cover_frame`` reports are only meaningful if the
+    overlay sees exactly the frames that were measured.
+
+    ``format=rgba`` appears twice deliberately. The first pins the decoder's
+    output for ``scale``; the second pins ``scale``'s own output, which is
+    otherwise negotiated with whatever is downstream -- and ``scale`` will
+    happily drop to an alpha-less format, which makes ``alphaextract``
+    unsatisfiable and fails the whole graph.
+    """
+    return (
+        f"format=rgba,fps={options.fps}:round=near,"
+        f"scale={options.width}:{options.height}"
+        f":force_original_aspect_ratio=decrease:flags=bicubic,"
+        f"pad={options.width}:{options.height}:(ow-iw)/2:(oh-ih)/2:color=black@0,"
+        f"setsar=1,format=rgba,settb=1/{options.fps * 1000}"
+    )
+
+
+def _alpha_by_frame(path: Path, options: RenderOptions) -> list[int]:
+    """One mean-alpha byte per frame of the sweep, at the output frame rate.
+
+    Scaling the extracted alpha plane to 1x1 is the measurement: ``area``
+    scaling averages every pixel, so 255 means the frame covers the picture
+    completely.
+    """
+    command = [
+        "ffmpeg", "-v", "error", "-nostdin", "-nostats",
+        "-i", str(path),
+        "-filter_complex",
+        f"[0:v]{sweep_chain(options)},alphaextract,format=gray,scale=1:1:flags=area[a]",
+        "-map", "[a]", "-f", "rawvideo", "-pix_fmt", "gray", "-",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            check=True,
+            timeout=settings.render_ffmpeg_timeout_seconds,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        # A sweep with no alpha channel lands here, as does an unreadable file.
+        # Neither should fail a render: cover_frame falls back to the midpoint.
+        logger.warning("could not measure the sweep's alpha (%s); assuming it covers at its midpoint", exc)
+        return []
+    return list(result.stdout)
+
+
+def load_sweep(options: RenderOptions) -> Sweep | None:
+    """Measure the configured sweep. Never raises.
+
+    A missing, unreadable or zero-length sweep yields ``None`` and every cut
+    renders bare, exactly as it does for clips too short to carry one. A
+    transition is decoration; it must never be the reason a render fails.
+    """
+    path = options.sweep
+    if not path.is_file():
+        logger.warning("brand sweep is missing at %s; cuts will render bare", path)
+        return None
+
+    media = probe_media(path)
+    duration = media.get("duration")
+    if not media.get("has_video") or not duration or duration <= 0:
+        logger.warning("brand sweep %s has no usable video; cuts will render bare", path)
+        return None
+
+    frames = max(1, round(duration * options.fps))
+    alpha = _alpha_by_frame(path, options)
+    if alpha:
+        # Trust the decoded frame count over the container's duration.
+        frames = len(alpha)
+    cover = brand.cover_frame(alpha) if alpha else frames // 2
+    logger.info(
+        "brand sweep %s: %d frames at %dfps, cutting at frame %d",
+        path.name, frames, options.fps, cover,
+    )
+    return Sweep(path=path, frames=frames, cover=cover)
+
+
+# --------------------------------------------------------------------------
 # Pass 2: plan the joins
 # --------------------------------------------------------------------------
+def decide_boundaries(
+    segments: Sequence[Segment], sweep: Sweep | None
+) -> list[Boundary]:
+    """Choose which cuts carry a sweep, without placing them in a timeline.
+
+    The test is on the two adjacent clips alone, never on where the cut falls
+    in the finished movie, because chunked rendering places the same boundary
+    against two different segment lists. Requiring both neighbours to be at
+    least a full sweep long guarantees, in any grouping, that the sweep starts
+    at or after the group's first frame, ends at or before its last, and never
+    collides with the sweep on the far side of a clip.
+    """
+    boundaries: list[Boundary] = []
+    for index in range(max(0, len(segments) - 1)):
+        room = min(segments[index].frames, segments[index + 1].frames)
+        if sweep is None or room < sweep.frames:
+            if sweep is not None:
+                logger.warning(
+                    "cut %d renders bare: a %d-frame sweep needs %d frames of clip "
+                    "on each side, and the shorter neighbour has %d",
+                    index, sweep.frames, sweep.frames, room,
+                )
+            boundaries.append(Boundary(index=index))
+            continue
+        boundaries.append(Boundary(index=index, sweep=sweep))
+    return boundaries
+
+
 def place_boundaries(
     segments: Sequence[Segment], boundaries: Sequence[Boundary]
 ) -> list[Boundary]:
-    """Recompute each boundary's xfade offsets against a given segment list.
+    """Resolve each sweep's start frame against a given segment list.
 
     Separate from deciding a boundary because chunked rendering places the same
     boundary twice: once inside its group, and once between group outputs. The
-    creative decisions are seeded by the GLOBAL boundary index and must not
-    change when the grouping does.
+    decision must not change when the grouping does.
 
-        O_sting(i)  = L_i - b_i
-        O_clip(i+1) = L_i + d_i
-        L_(i+1)     = L_i + d_i + N_(i+1)
+        C_i     = sum of segment lengths up to and including i
+        start_i = C_i - cover
     """
     if len(segments) < 2:
         return []
@@ -240,122 +373,31 @@ def place_boundaries(
 
     running = segments[0].frames
     for index, boundary in enumerate(boundaries):
-        following = segments[index + 1]
-        if boundary.hard_cut:
-            running += following.frames
-            continue
-        boundary.sting_offset = running - boundary.blend_frames
-        boundary.clip_offset = running + boundary.hold_frames
-        running += boundary.hold_frames + following.frames
+        if boundary.sweep is not None:
+            boundary.start = running - boundary.sweep.cover
+        running += segments[index + 1].frames
     return list(boundaries)
 
 
-def decide_boundaries(
-    segments: Sequence[Segment], options: RenderOptions, workdir: Path | None = None
-) -> list[Boundary]:
-    """Choose each join's timing and artwork, without placing it in a timeline."""
-    boundaries: list[Boundary] = []
-    if len(segments) < 2:
-        return boundaries
-
-    for index in range(len(segments) - 1):
-        current, following = segments[index], segments[index + 1]
-        # Each clip must keep at least one frame that is not mid-transition.
-        blend = min(options.blend_frames, current.frames - 1, following.frames - 1)
-        hold = options.hold_frames
-
-        if hold <= 0 or blend < 1:
-            # Degrade to a hard cut. xfade cannot take duration=0, so these
-            # pairs are joined with the concat filter instead.
-            boundaries.append(Boundary(index=index, blend_frames=0, hold_frames=0))
-            if blend < 1 and hold > 0:
-                logger.warning(
-                    "boundary %d falls back to a hard cut: adjacent clips are too short",
-                    index,
-                )
-            continue
-
-        spec = brand.plan_sting(
-            options.movie_id, index, options.family,
-            sting_frames=hold + 2 * blend, fps=options.fps,
-            size=(options.width, options.height),
-            blue=options.blue, orange=options.orange,
-        )
-        png = (workdir / f"sting-{index:04d}.png") if workdir else None
-        if png is not None:
-            brand.create_sting_image(
-                spec, png, logo_path=options.sting_logo_path,
-                logo_scale=options.sting_logo_scale,
-            )
-        boundaries.append(
-            Boundary(
-                index=index, blend_frames=blend, hold_frames=hold, spec=spec, png=png
-            )
-        )
-    return boundaries
-
-
 def plan_boundaries(
-    segments: Sequence[Segment], options: RenderOptions, workdir: Path | None = None
+    segments: Sequence[Segment], sweep: Sweep | None
 ) -> list[Boundary]:
-    """Decide and place every join. The single-pass path uses this directly."""
-    return place_boundaries(segments, decide_boundaries(segments, options, workdir))
+    """Decide and place every cut. The single-pass path uses this directly."""
+    return place_boundaries(segments, decide_boundaries(segments, sweep))
 
 
 def total_frames(segments: Sequence[Segment], boundaries: Sequence[Boundary]) -> int:
-    return sum(s.frames for s in segments) + sum(b.hold_frames for b in boundaries)
+    """Overlaying a transition costs no time, so this is just the clips.
+
+    ``boundaries`` is accepted so callers need not care which transition model
+    is in force; it deliberately does not affect the result.
+    """
+    return sum(segment.frames for segment in segments)
 
 
 # --------------------------------------------------------------------------
 # Pass 2: build the graph
 # --------------------------------------------------------------------------
-def render_sting(boundary: Boundary, destination: Path, options: RenderOptions) -> Path:
-    """Encode one sting to the same profile as a normalised clip.
-
-    Pass 2 used to take the sting as a looped PNG and pan it with `crop` inside
-    the main graph. Those canvases are up to 3840x2160 RGBA -- 33MB per frame --
-    and the chained xfades buffer them, so peak memory grew about 0.8GB per clip
-    and a seven-clip movie was killed by the OOM killer at ~4.6GB.
-
-    Encoding the pan here means every pass-2 input is a small, uniform 1080p
-    H.264 stream.
-    """
-    spec = boundary.spec
-    if spec is None or boundary.png is None:
-        raise RenderError("Cannot render a sting without its artwork.", "setup")
-
-    fps = options.fps
-    tail = _NORMALIZE_TAIL.format(fps=fps, tb=fps * 1000)
-    command = [
-        "ffmpeg", "-y", "-hide_banner", "-nostdin", "-nostats",
-        # Two frames of slack, then trimmed exactly: the second xfade of a
-        # boundary consumes the accumulated stream to its last frame.
-        "-loop", "1", "-framerate", str(fps),
-        "-t", _frames_to_seconds(boundary.sting_frames + 2, fps),
-        "-i", str(boundary.png),
-        "-f", "lavfi", "-t", _frames_to_seconds(boundary.sting_frames, fps),
-        "-i", "anullsrc=r=48000:cl=stereo",
-        "-filter_complex",
-        (
-            f"[0:v]crop={options.width}:{options.height}"
-            f":x='{spec.pan_x_expr}':y='{spec.pan_y_expr}',{tail},"
-            f"trim=end_frame={boundary.sting_frames},setpts=PTS-STARTPTS,fps={fps}[v];"
-            f"[1:a]aresample=48000:first_pts=0,"
-            f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
-            f"atrim=end_sample={boundary.sting_frames * options.samples_per_frame},"
-            f"asetpts=N/SR/TB[a]"
-        ),
-        "-map", "[v]", "-map", "[a]",
-        "-fps_mode", "cfr", "-r", str(fps),
-        "-c:v", "libx264", "-preset", settings.render_intermediate_preset,
-        "-crf", str(settings.render_intermediate_crf), "-pix_fmt", "yuv420p",
-        "-c:a", "aac", "-b:a", settings.render_audio_bitrate, "-ar", "48000", "-ac", "2",
-        str(destination),
-    ]
-    _run(command, "sting")
-    return destination
-
-
 def build_chain_command(
     segments: Sequence[Segment],
     boundaries: Sequence[Boundary],
@@ -370,91 +412,76 @@ def build_chain_command(
     fps, spf = options.fps, options.samples_per_frame
     tail = _NORMALIZE_TAIL.format(fps=fps, tb=fps * 1000)
 
+    if len(boundaries) != max(0, len(segments) - 1):
+        raise RenderError(
+            f"{len(boundaries)} boundaries cannot join {len(segments)} segments.",
+            "setup",
+        )
+
     inputs: list[str] = []
     graph: list[str] = []
-    input_index = 0
-    clip_inputs: list[int] = []
-    sting_inputs: dict[int, int] = {}
-
-    for position, segment in enumerate(segments):
+    for segment in segments:
         inputs += ["-i", str(segment.path)]
-        clip_inputs.append(input_index)
-        input_index += 1
-        if position < len(boundaries):
-            boundary = boundaries[position]
-            if not boundary.hard_cut and boundary.clip is not None:
-                inputs += ["-i", str(boundary.clip)]
-                sting_inputs[position] = input_index
-                input_index += 1
 
-    # Normalize every branch identically -- xfade rejects mismatched size, SAR
+    # The sweep is opened once per cut rather than split from a single input.
+    # A split holds every frame until its last branch consumes it, and those
+    # branches are consumed seconds apart in the output; separate inputs each
+    # sit idle behind their own tpad and decode only when their turn arrives.
+    swept = [b for b in boundaries if not b.hard_cut]
+    for boundary in swept:
+        assert boundary.sweep is not None
+        inputs += ["-i", str(boundary.sweep.path)]
+
+    # Normalize every branch identically -- concat rejects mismatched size, SAR
     # or timebase.
     for position, segment in enumerate(segments):
-        idx = clip_inputs[position]
         graph.append(
-            f"[{idx}:v]{tail},trim=end_frame={segment.frames},"
+            f"[{position}:v]{tail},trim=end_frame={segment.frames},"
             # fps is re-asserted AFTER setpts: setpts clears the link's
-            # frame-rate metadata, and ffmpeg 7.x's xfade refuses an input
-            # whose rate reads as 1/0. 8.x tolerates it, so this only shows up
-            # off the development machine.
+            # frame-rate metadata, and ffmpeg 7.x's concat and overlay refuse an
+            # input whose rate reads as 1/0. 8.x tolerates it, so this only
+            # shows up off the development machine.
             f"setpts=PTS-STARTPTS,fps={fps}[v{position}]"
         )
         graph.append(
-            f"[{idx}:a]aresample=48000:first_pts=0,"
+            f"[{position}:a]aresample=48000:first_pts=0,"
             f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
             f"atrim=end_sample={segment.frames * spf},asetpts=N/SR/TB[a{position}]"
         )
 
-    for position, boundary in enumerate(boundaries):
-        if boundary.hard_cut:
-            continue
-        spec = boundary.spec
-        if position not in sting_inputs or spec is None:
-            # plan_boundaries ran without a workdir, or render_sting was never
-            # called. Fail clearly rather than with a KeyError deep in the graph.
+    if len(segments) == 1:
+        video, audio = "v0", "a0"
+    else:
+        pairs = "".join(f"[v{p}][a{p}]" for p in range(len(segments)))
+        graph.append(f"{pairs}concat=n={len(segments)}:v=1:a=1[vc][ac]")
+        video, audio = "vc", "ac"
+
+    # Every cut is hard; the sweeps are composited over the joined timeline.
+    # tpad takes a frame COUNT, so the placement stays exact -- a start
+    # expressed in seconds would round onto the wrong frame sooner or later.
+    for position, boundary in enumerate(swept):
+        assert boundary.sweep is not None
+        if boundary.start is None or boundary.start < 0:
+            # Unplaced, or placed against a different segment list. Either way
+            # the sweep would land somewhere other than on its cut, and a
+            # transition drifting a second off its join is much harder to spot
+            # in a finished movie than a failed render.
             raise RenderError(
-                f"Boundary {position} has no encoded sting; "
-                "plan_boundaries() needs a workdir and render_sting() must run.",
+                f"Boundary {boundary.index} is not placed on this timeline; "
+                "place_boundaries() must run against these segments.",
                 "setup",
             )
-        idx = sting_inputs[position]
         graph.append(
-            f"[{idx}:v]{tail},trim=end_frame={boundary.sting_frames},"
-            f"setpts=PTS-STARTPTS,fps={fps}[s{position}]"
+            f"[{len(segments) + position}:v]{sweep_chain(options)},"
+            f"tpad=start={boundary.start}:start_mode=add:color=black@0,"
+            f"fps={fps}[sw{position}]"
         )
+        # eof_action=pass: the sweep is far shorter than the movie, and without
+        # this overlay would freeze its last frame over everything after it.
         graph.append(
-            f"[{idx}:a]aresample=48000:first_pts=0,"
-            f"aformat=sample_fmts=fltp:channel_layouts=stereo,apad,"
-            f"atrim=end_sample={boundary.sting_frames * spf},asetpts=N/SR/TB[sa{position}]"
+            f"[{video}][sw{position}]overlay=0:0:format=auto:eof_action=pass[vo{position}]"
         )
-
-    video, audio = "v0", "a0"
-    for position, boundary in enumerate(boundaries):
-        nxt = position + 1
-        if boundary.hard_cut:
-            graph.append(f"[{video}][v{nxt}]concat=n=2:v=1:a=0[vx{position}]")
-            graph.append(f"[{audio}][a{nxt}]concat=n=2:v=0:a=1[ax{position}]")
-            video, audio = f"vx{position}", f"ax{position}"
-            continue
-
-        spec = boundary.spec
-        assert spec is not None
-        blend = _frames_to_seconds(boundary.blend_frames, fps)
-        samples = boundary.blend_frames * spf
-
-        graph.append(
-            f"[{video}][s{position}]xfade=transition={spec.transition_in}"
-            f":duration={blend}:offset={_frames_to_seconds(boundary.sting_offset, fps)}"
-            f"[vs{position}]"
-        )
-        graph.append(
-            f"[vs{position}][v{nxt}]xfade=transition={spec.transition_out}"
-            f":duration={blend}:offset={_frames_to_seconds(boundary.clip_offset, fps)}"
-            f"[vx{position}]"
-        )
-        graph.append(f"[{audio}][sa{position}]acrossfade=ns={samples}:c1=tri:c2=tri[as{position}]")
-        graph.append(f"[as{position}][a{nxt}]acrossfade=ns={samples}:c1=tri:c2=tri[ax{position}]")
-        video, audio = f"vx{position}", f"ax{position}"
+        video = f"vo{position}"
 
     return [
         "ffmpeg", "-y", "-hide_banner", "-nostdin", "-nostats",
@@ -498,21 +525,31 @@ def join_segments(
     workdir: Path,
     *,
     depth: int = 0,
+    on_progress: Callable[[], None] | None = None,
 ) -> Segment:
     """Join every segment, in groups small enough to survive.
 
-    One filter graph over all inputs is the obvious implementation and is what
-    this did first, but chained xfades buffer heavily: peak memory measured
-    1.69GB for two clips and 4.61GB for seven, where the OOM killer took it.
-    The cost is the chain, not the inputs.
+    Overlaying the sweep is far cheaper than the chained xfades this used to
+    do -- those buffered about 0.8GB per clip and were OOM-killed at seven
+    clips -- but grouping is kept because it also bounds the number of open
+    decoders, and because a boundary's decision is already independent of it.
 
-    So segments are joined in groups of ``render_chunk_size`` and the group
-    outputs joined again, recursively. Boundaries keep their global index, so
-    the artwork and transition choices do not depend on the grouping.
+    Segments are joined in groups of ``render_chunk_size`` and the group
+    outputs joined again, recursively. A sweep that straddles a group seam is
+    simply placed at the outer level, against the group outputs.
+
+    ``on_progress`` fires after every group. Joining is the long half of a
+    render now that there are no stings to encode -- measured at 78s of a 104s
+    six-clip job -- and without a ping here the whole of it passes with the
+    heartbeat untouched, which is what ``requeue_stale_jobs`` reads as a dead
+    worker.
     """
     chunk = max(2, settings.render_chunk_size)
     if len(segments) <= chunk:
-        return _render_group(segments, boundaries, output, options)
+        joined = _render_group(segments, boundaries, output, options)
+        if on_progress is not None:
+            on_progress()
+        return joined
 
     groups: list[Segment] = []
     between: list[Boundary] = []
@@ -530,6 +567,8 @@ def join_segments(
                 "joining group %d at depth %d (%d segments)", index, depth, len(run)
             )
             groups.append(_render_group(run, inner, destination, options))
+            if on_progress is not None:
+                on_progress()
 
         joiner = position + len(run) - 1
         if joiner < len(boundaries):
@@ -537,7 +576,10 @@ def join_segments(
         position += len(run)
         index += 1
 
-    return join_segments(groups, between, output, options, workdir, depth=depth + 1)
+    return join_segments(
+        groups, between, output, options, workdir,
+        depth=depth + 1, on_progress=on_progress,
+    )
 
 
 # --------------------------------------------------------------------------
@@ -549,17 +591,18 @@ def render_movie(
     options: RenderOptions | None = None,
     on_progress: Callable[[], None] | None = None,
 ) -> dict:
-    """Normalize every clip, then join them with brand stings.
+    """Normalize every clip, then join them under the brand sweep.
 
-    Returns the probed metadata of the finished file, enriched with the
-    transition decisions so the admin console and tests can inspect them.
+    Returns the probed metadata of the finished file, enriched with where each
+    sweep landed so the admin console and tests can inspect it.
     """
     if not clips:
         raise RenderError("A render needs at least one clip.", "input")
     options = options or RenderOptions(movie_id=output.stem)
 
-    # 2n-1 inputs are opened at once in pass 2. Guard the descriptor/decoder
-    # budget with a clear error rather than an opaque ffmpeg failure.
+    # 2n-1 inputs are opened at once in pass 2 -- one per clip, one per swept
+    # cut. Guard the descriptor/decoder budget with a clear error rather than
+    # an opaque ffmpeg failure.
     if len(clips) > settings.render_max_graph_inputs:
         raise RenderError(
             f"This movie has {len(clips)} clips; the renderer joins at most "
@@ -568,6 +611,7 @@ def render_movie(
         )
 
     output.parent.mkdir(parents=True, exist_ok=True)
+    sweep = load_sweep(options)
     with tempfile.TemporaryDirectory(prefix="clip-create-") as temporary:
         workdir = Path(temporary)
         segments = []
@@ -580,17 +624,14 @@ def render_movie(
                 on_progress()
         # Decided once, against the original clips, so the choices do not
         # depend on how the joins are later grouped.
-        boundaries = decide_boundaries(segments, options, workdir)
-        for boundary in boundaries:
-            if not boundary.hard_cut:
-                boundary.clip = render_sting(
-                    boundary, workdir / f"sting-{boundary.index:04d}.mp4", options
-                )
-                if on_progress is not None:
-                    on_progress()
-        expected = total_frames(segments, place_boundaries(segments, boundaries))
+        boundaries = decide_boundaries(segments, sweep)
+        expected = total_frames(segments, boundaries)
+        # Where each sweep sits in the FINISHED movie. Captured now, because
+        # join_segments re-places a seam boundary against the group outputs it
+        # ends up joining, which leaves a group-relative start on the object.
+        placement = [boundary.start for boundary in place_boundaries(segments, boundaries)]
         logger.info(
-            "joining %d clips with %d transitions (%d expected frames, %.3fs)",
+            "joining %d clips with %d swept cuts (%d expected frames, %.3fs)",
             len(segments), sum(0 if b.hard_cut else 1 for b in boundaries),
             expected, expected / options.fps,
         )
@@ -598,7 +639,9 @@ def render_movie(
         # killed or timed-out ffmpeg does not leave a truncated MP4 that no
         # Video row references and nothing ever cleans up.
         scratch = workdir / "output.mp4"
-        join_segments(segments, boundaries, scratch, options, workdir)
+        join_segments(
+            segments, boundaries, scratch, options, workdir, on_progress=on_progress
+        )
         if not scratch.exists() or scratch.stat().st_size == 0:
             raise RenderError("FFmpeg did not produce an output file.", "verify")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -612,9 +655,15 @@ def render_movie(
 
     media["frames"] = expected
     media["expected_duration"] = expected / options.fps
-    media["family"] = options.family
+    media["sweep"] = (
+        {"source": sweep.path.name, "frames": sweep.frames, "cover": sweep.cover}
+        if sweep
+        else None
+    )
     media["transitions"] = [
-        b.spec.as_metadata() if b.spec else {"boundary": b.index, "hard_cut": True}
-        for b in boundaries
+        {"boundary": b.index, "start": start}
+        if not b.hard_cut
+        else {"boundary": b.index, "hard_cut": True}
+        for b, start in zip(boundaries, placement)
     ]
     return media

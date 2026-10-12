@@ -30,7 +30,7 @@ from starlette.testclient import TestClient
 from backend.app.database import Base, get_db
 from backend.app.deps import get_current_user
 from backend.app.main import app
-from backend.app.models import Clip, Logo, Movie, MovieSlot, User
+from backend.app.models import BrandSweep, Clip, Movie, MovieSlot, User
 
 
 SAMPLES_DIR = Path(__file__).parent / "fixtures" / "samples"
@@ -226,22 +226,25 @@ def make_movie(db_session, user):
 
 
 @pytest.fixture
-def make_logo(db_session, user, tmp_path):
-    """The brand logo -- one per user, drawn in the centre of every sting."""
+def make_sweep(db_session, user, tmp_path):
+    """An account's own brand sweep -- one per user, played over every cut.
 
-    from PIL import Image
+    The bytes are a placeholder, not real video. Tests that need the sweep to
+    decode use the bundled one; these only need a row and a file that exists.
+    """
 
-    def _make(*, owner=None, size=(120, 120)):
-        path = tmp_path / f"brand-{uuid.uuid4().hex[:8]}.png"
-        Image.new("RGBA", size, (255, 200, 0, 255)).save(path)
-        logo = Logo(
+    def _make(*, owner=None, name=None):
+        path = tmp_path / (name or f"sweep-{uuid.uuid4().hex[:8]}.mov")
+        path.write_bytes(b"not really a video")
+        sweep = BrandSweep(
             user_id=(owner or user).id,
             original_name=path.name,
             storage_path=str(path),
+            duration_seconds=1.5,
         )
-        db_session.add(logo)
+        db_session.add(sweep)
         db_session.commit()
-        return logo
+        return sweep
 
     return _make
 

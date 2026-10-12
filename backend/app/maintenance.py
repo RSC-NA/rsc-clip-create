@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from backend.app.config import get_settings
 from backend.app.database import SessionLocal
 from backend.app.logging_config import configure_logging
-from backend.app.models import Clip, Logo, Video
+from backend.app.models import BrandSweep, Clip, Video
 
 
 logger = logging.getLogger(__name__)
@@ -31,7 +31,7 @@ settings = get_settings()
 TRACKED = (
     ("clips", Clip, "storage_path"),
     ("renders", Video, "storage_path"),
-    ("logos", Logo, "storage_path"),
+    ("sweeps", BrandSweep, "storage_path"),
 )
 
 

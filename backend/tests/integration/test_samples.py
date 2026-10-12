@@ -23,7 +23,6 @@ from backend.tests.integration.artifacts import (
 pytestmark = [pytest.mark.integration, requires_ffmpeg]
 
 FPS = 30
-HOLD_SECONDS = 0.6
 
 
 def test_sample_clips_are_named_for_the_parser(sample_clips):
@@ -39,18 +38,8 @@ def test_sample_clips_are_named_for_the_parser(sample_clips):
     )
 
 
-def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips, make_logo):
-    from pathlib import Path
-
-    hold_frames = round(HOLD_SECONDS * FPS)
-    options = RenderOptions(
-        movie_id="sample-reel",
-        fps=FPS,
-        hold_frames=hold_frames,
-        blend_frames=hold_frames // 2,
-        family="sweep",
-        sting_logo_path=Path(make_logo().storage_path),
-    )
+def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips):
+    options = RenderOptions(movie_id="sample-reel", fps=FPS)
 
     specs = [
         ClipSpec(source=path, name=parse_clip_filename(path.name))
@@ -67,11 +56,12 @@ def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips, make_
         info = probe_media(path, strict=True)
         source_frames.append(max(1, int(info["duration"] * FPS)))
 
-    expected_frames = sum(source_frames) + hold_frames * (len(sample_clips) - 1)
+    # The sweep is overlaid on each cut, so it adds nothing to the timeline.
+    expected_frames = sum(source_frames)
 
-    # Frames for eyeballing: the middle of every clip and every sting.
+    # Frames for eyeballing: the middle of every clip, and every cut.
     frames = []
-    for label, at in frame_plan(source_frames, hold_frames, FPS):
+    for label, at in frame_plan(source_frames, FPS):
         destination = directory / "frames" / f"{label}.png"
         if extract_frame(output, at, destination):
             frames.append((f"{label} @ {at:.2f}s", destination))
@@ -82,7 +72,7 @@ def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips, make_
         sources=list(sample_clips),
         plan={
             "clips": len(sample_clips),
-            "hold seconds": HOLD_SECONDS,
+            "sweep": media["sweep"],
             "frames": expected_frames,
             "duration": round(expected_frames / FPS, 3),
             "resolution": "1920x1080",
@@ -90,7 +80,7 @@ def test_sample_render_matches_the_plan_and_writes_artifacts(sample_clips, make_
         },
         measured={
             "clips": len(sample_clips),
-            "hold seconds": HOLD_SECONDS,
+            "sweep": media["sweep"],
             "frames": media["frames"],
             "duration": round(probed["duration"], 3),
             "resolution": f"{probed['width']}x{probed['height']}",

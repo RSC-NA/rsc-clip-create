@@ -74,7 +74,3 @@ def parse_clip_filename(filename: str, allowed_extensions: set[str] | None = Non
             raise ValueError(f"{label} must be {MAX_SEGMENT_LENGTH} characters or fewer.")
     return parsed
 
-
-def normalize_team(team: str | None) -> str:
-    """Canonical form used to match a clip's team token to a stored logo."""
-    return (team or "").strip().lower()

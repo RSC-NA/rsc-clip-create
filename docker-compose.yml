@@ -32,7 +32,7 @@ services:
     environment:
       DATABASE_URL: mysql+pymysql://clip_create:clip_create@mysql:3306/clip_create
       STORAGE_ROOT: /app/storage
-      # Browser-facing: the backend builds absolute download and logo URLs with
+      # Browser-facing: the backend builds absolute download and brand sweep URLs with
       # this, so it must be reachable from the host, not from inside the network.
       FASTAPI_PUBLIC_URL: ${FASTAPI_PUBLIC_URL:-http://localhost:8000}
       FRONTEND_PUBLIC_URL: ${FRONTEND_PUBLIC_URL:-http://localhost:3000}

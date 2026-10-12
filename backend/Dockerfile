@@ -28,7 +28,7 @@ COPY backend ./backend
 # with the right ownership means a fresh named volume inherits it.
 RUN groupadd --system app \
  && useradd --system --gid app --home /app --no-log-init app \
- && mkdir -p /app/storage/clips /app/storage/renders /app/storage/logos \
+ && mkdir -p /app/storage/clips /app/storage/renders /app/storage/sweeps \
  && chown -R app:app /app
 
 USER app

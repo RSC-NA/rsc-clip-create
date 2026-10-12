@@ -1,19 +1,13 @@
-import subprocess
-import sys
-
-import pytest
 from PIL import Image, ImageDraw
 
 from backend.app.filename_parser import ParsedClipName
 from backend.app.filename_parser import LABEL_SEPARATOR
 from backend.app.services.brand import (
     BUNDLED_FONT,
-    DEFAULT_FAMILY,
-    MIRROR,
-    TRANSITION_FAMILIES,
+    BUNDLED_SWEEP,
+    COVER_THRESHOLD,
+    cover_frame,
     create_label_image,
-    create_sting_image,
-    plan_sting,
     resolve_font,
 )
 
@@ -27,78 +21,9 @@ def _render(text: str, font) -> bytes:
 NAME = ParsedClipName("Falcons", "Ace Rivera", "Gold", "mp4")
 
 
-def _sting(movie="m1", index=0, family="sweep"):
-    return plan_sting(movie, index, family, sting_frames=36, fps=30, size=(1920, 1080))
-
-
-def test_same_movie_and_boundary_is_reproducible():
-    assert _sting() == _sting()
-
-
-def test_different_boundaries_and_movies_diverge():
-    assert _sting(index=0) != _sting(index=1)
-    assert _sting(movie="a") != _sting(movie="b")
-
-
-def test_seeding_survives_a_different_process_hash_seed():
-    """hash() is randomized per process; this catches a regression to it."""
-    script = (
-        "from backend.app.services.brand import plan_sting;"
-        "s=plan_sting('m1',3,'sweep',sting_frames=36,fps=30,size=(1920,1080));"
-        "print(s.transition_in, s.axis, s.wedge_count, s.wedge_skew)"
-    )
-    outputs = set()
-    for seed in ("0", "1", "12345"):
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True, text=True, check=True,
-            env={"PYTHONHASHSEED": seed, "PATH": "/usr/bin:/bin", "PYTHONPATH": "."},
-        )
-        outputs.add(result.stdout.strip())
-    assert len(outputs) == 1, outputs
-
-
-def test_lead_colour_strictly_alternates():
-    leads = [_sting(index=i).lead for i in range(6)]
-    assert leads[0::2] == [leads[0]] * 3
-    assert leads[1::2] == [leads[1]] * 3
-    assert leads[0] != leads[1]
-
-
-@pytest.mark.parametrize("family", sorted(TRANSITION_FAMILIES))
-def test_every_family_picks_from_its_own_pool(family):
-    spec = _sting(family=family)
-    assert spec.transition_in in TRANSITION_FAMILIES[family]
-
-
-def test_unknown_family_falls_back_to_the_default():
-    spec = _sting(family="does-not-exist")
-    assert spec.family == DEFAULT_FAMILY
-    assert spec.transition_in in TRANSITION_FAMILIES[DEFAULT_FAMILY]
-
-
-def test_exit_transition_mirrors_the_entry():
-    spec = _sting()
-    assert spec.transition_out == MIRROR.get(spec.transition_in, spec.transition_in)
-
-
-def test_mirror_table_is_symmetric():
-    for left, right in MIRROR.items():
-        assert MIRROR[right] == left
-
-
-def test_pan_canvas_is_larger_along_the_travel_axis():
-    for index in range(8):
-        spec = _sting(index=index)
-        width, height = spec.canvas
-        if spec.axis == "horizontal":
-            assert (width, height) == (3840, 1080)
-        elif spec.axis == "vertical":
-            assert (width, height) == (1920, 2160)
-        else:
-            assert (width, height) == (3840, 2160)
-
-
+# --------------------------------------------------------------------------
+# The clip label
+# --------------------------------------------------------------------------
 def test_label_is_one_line_separated_by_dots():
     assert NAME.label == "Falcons · Ace Rivera · Gold"
     assert "\n" not in NAME.label
@@ -114,7 +39,7 @@ def test_the_bundled_font_is_used_by_default():
 def test_the_separator_has_a_glyph_in_the_bundled_font():
     """A missing glyph renders as .notdef -- a box between every word."""
     font = resolve_font(56)
-    absent = _render("\ue000", font)          # private use area: always missing
+    absent = _render("", font)          # private use area: always missing
     separator = _render(LABEL_SEPARATOR.strip(), font)
     assert separator != absent
     assert any(separator)
@@ -164,8 +89,9 @@ def test_label_is_full_frame(tmp_path):
 
 def test_the_label_carries_no_logo(tmp_path):
     """Regression for a deliberate change: a per-team mark used to sit to the
-    left of the text. The brand logo lives in the sting centre now, so the
-    label must not accept or draw one."""
+    left of the text, and then a brand logo sat in the middle of a generated
+    transition card. Both are gone -- the brand mark is the sweep now -- and
+    the label must not accept or draw one."""
     import inspect
 
     params = inspect.signature(create_label_image).parameters
@@ -173,88 +99,46 @@ def test_the_label_carries_no_logo(tmp_path):
     assert "logo_max_width" not in params
 
 
-# --------------------------------------------------------------------------
-# The brand logo, centred in every sting
-# --------------------------------------------------------------------------
-# Magenta, deliberately: the sting art is blue, orange and white, so a white
-# test mark is indistinguishable from the wedges' leading edges.
-MARK_COLOUR = (255, 0, 255)
-
-
-def _brand_mark(tmp_path, size=(400, 400)):
-    path = tmp_path / "brand.png"
-    Image.new("RGBA", size, MARK_COLOUR + (255,)).save(path)
-    return path
-
-
-def _sting_spec(index=0):
-    """Distinct from _sting above, which the transition-planning tests use."""
-    return plan_sting("m1", index, "sweep", sting_frames=36, fps=30, size=(1920, 1080))
-
-
-def test_the_sting_logo_lands_in_the_centre_of_the_canvas(tmp_path):
-    """The pan window's midpoint is the canvas centre, so a mark centred on the
-    canvas reads dead centre at the peak of the sweep."""
-    spec = _sting_spec()
-    out = tmp_path / "sting.png"
-    create_sting_image(spec, out, logo_path=_brand_mark(tmp_path))
-
-    image = Image.open(out).convert("RGBA")
-    width, height = image.size
-    # The mark is opaque white; the wedges behind it are not.
-    centre = image.getpixel((width // 2, height // 2))
-    assert centre[:3] == MARK_COLOUR, f"expected the mark at the centre, got {centre}"
-
-
-def test_a_sting_without_a_logo_still_renders(tmp_path):
-    spec = _sting_spec()
-    out = tmp_path / "plain.png"
-    create_sting_image(spec, out, logo_path=None)
-    assert Image.open(out).size == spec.canvas
-
-
-def test_an_unreadable_sting_logo_degrades_to_a_plain_sting(tmp_path):
-    """A broken logo must never fail a render."""
-    broken = tmp_path / "broken.png"
-    broken.write_bytes(b"not an image")
-    spec = _sting_spec()
-
-    plain, with_broken = tmp_path / "a.png", tmp_path / "b.png"
-    create_sting_image(spec, plain, logo_path=None)
-    create_sting_image(spec, with_broken, logo_path=broken)
-
-    assert Image.open(with_broken).tobytes() == Image.open(plain).tobytes()
-
-
-def test_a_missing_sting_logo_path_is_ignored(tmp_path):
-    spec = _sting_spec()
-    out = tmp_path / "out.png"
-    create_sting_image(spec, out, logo_path=tmp_path / "nope.png")
-    assert out.is_file()
-
-
-def test_the_sting_logo_is_sized_against_the_frame_not_the_canvas(tmp_path):
-    """Otherwise a vertical sweep, whose canvas is twice as tall, would carry a
-    mark of a different apparent size than a horizontal one."""
-    mark = _brand_mark(tmp_path)
-    widths = []
-    for index in range(6):
-        spec = _sting_spec(index)
-        out = tmp_path / f"s{index}.png"
-        create_sting_image(spec, out, logo_path=mark, logo_scale=0.25)
-        # Measure the mark by scanning the canvas centre row for its colour.
-        image = Image.open(out).convert("RGBA")
-        row = spec.canvas[1] // 2
-        span = [
-            x for x in range(spec.canvas[0])
-            if image.getpixel((x, row))[:3] == MARK_COLOUR
-        ]
-        widths.append(max(span) - min(span) if span else 0)
-
-    expected = round(min(1920, 1080) * 0.25)
-    assert all(abs(w - expected) <= 8 for w in widths), widths
-
-
 def test_font_resolution_is_host_independent_and_legible():
     font = resolve_font(42)
     assert font.size == 42
+
+
+# --------------------------------------------------------------------------
+# Where the sweep hides the cut
+# --------------------------------------------------------------------------
+def test_the_sweep_is_bundled():
+    """A fresh checkout renders the real transition with no setup."""
+    assert BUNDLED_SWEEP.is_file()
+
+
+def test_the_cut_lands_in_the_middle_of_the_covered_span():
+    # Transparent, ramping up, opaque for a while, then breaking away.
+    alpha = [0, 60, 180, 255, 255, 255, 255, 255, 200, 40, 0]
+    assert cover_frame(alpha) == 5
+
+
+def test_an_off_centre_covered_span_still_cuts_inside_it():
+    alpha = [0, 255, 255, 255, 100, 50, 20, 10, 0, 0]
+    frame = cover_frame(alpha)
+    assert frame == 2
+    assert alpha[frame] >= COVER_THRESHOLD
+
+
+def test_a_nearly_opaque_frame_counts_as_covered():
+    """The threshold is not 255. A replacement sweep with a soft edge or one
+    stray transparent pixel scores a point or two below it and must not be
+    read as never covering."""
+    alpha = [0, 251, 252, 251, 0]
+    assert cover_frame(alpha) == 2
+
+
+def test_a_sweep_that_never_covers_falls_back_to_its_midpoint():
+    """A subtle overlay, or a file with no alpha channel at all. Cutting under
+    the busiest part of the animation is the best available guess; failing the
+    render is not an option."""
+    assert cover_frame([0, 40, 90, 120, 90, 40, 0]) == 3
+
+
+def test_no_frames_at_all_is_not_an_error():
+    assert cover_frame([]) == 0

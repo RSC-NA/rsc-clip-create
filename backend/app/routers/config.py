@@ -26,4 +26,6 @@ def client_config():
         maxClipSizeBytes=settings.max_clip_size_bytes,
         maxUploadBytes=settings.max_upload_bytes,
         maxClipDurationSeconds=settings.max_clip_duration_seconds,
+        supportedSweepFormats=sorted(settings.supported_sweep_formats),
+        maxBrandSweepBytes=settings.max_brand_sweep_bytes,
     )

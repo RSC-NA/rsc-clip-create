@@ -25,6 +25,8 @@ def test_config_is_served(client):
         "maxClipSizeBytes",
         "maxUploadBytes",
         "maxClipDurationSeconds",
+        "supportedSweepFormats",
+        "maxBrandSweepBytes",
     }
     assert "mp4" in body["supportedExtensions"]
 

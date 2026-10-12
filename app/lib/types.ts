@@ -44,22 +44,20 @@ export type MovieSummary = {
   updatedAt: string;
   slotCount: number;
   latestVideo: VideoSummary | null;
-  transitionStyle: string;
-  transitionHoldSeconds: number;
 };
 
 export type MovieDetail = MovieSummary & {
   clips: ClipSummary[];
   slots: MovieSlot[];
-  transitionStyles: string[];
   latestJob: RenderJob | null;
 };
 
-export type Logo = {
+export type BrandSweep = {
   id: string;
   originalName: string;
   storagePath: string;
-  imageUrl: string;
+  videoUrl: string;
+  durationSeconds: number | null;
   createdAt: string;
 };
 
@@ -71,6 +69,8 @@ export type ClientConfig = {
   maxClipSizeBytes: number;
   maxUploadBytes: number;
   maxClipDurationSeconds: number;
+  supportedSweepFormats: string[];
+  maxBrandSweepBytes: number;
 };
 
 export type RenderJobClipResult = {

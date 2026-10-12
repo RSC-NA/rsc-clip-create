@@ -39,39 +39,17 @@ function describeClip(clip: ClipSummary) {
   return parts ? `${parts}${seconds}` : clip.name;
 }
 
-function clampHold(raw: string, previous: number) {
-  if (raw.trim() === "") return previous;
-  const value = Number(raw);
-  if (Number.isNaN(value)) return previous;
-  return Math.min(3, Math.max(0, value));
-}
-
-const STYLE_BLURB: Record<string, string> = {
-  sweep: "Wipes and slides. The brand card travels the way the cut does.",
-  slice: "Hard-edged slices and diagonals.",
-  dissolve: "Soft dissolves, pixelisation and grain.",
-  pop: "Circles, zooms and squeezes.",
-  storm: "Wind and blur. The busiest of the set.",
-  classic: "A plain crossfade through the brand card.",
-};
-
 export function TimelineEditor({
   movieId,
   initialSlots,
   availableClips,
   initialJob,
-  transitionStyle,
-  transitionHoldSeconds,
-  transitionStyles,
   minClipCount,
 }: {
   movieId: string;
   initialSlots: MovieSlot[];
   availableClips: ClipSummary[];
   initialJob: RenderJob | null;
-  transitionStyle: string;
-  transitionHoldSeconds: number;
-  transitionStyles: string[];
   minClipCount: number;
 }) {
   const router = useRouter();
@@ -80,8 +58,6 @@ export function TimelineEditor({
       ? normalizeSlots(initialSlots)
       : Array.from({ length: 5 }, (_, index) => createEmptySlot(index)),
   );
-  const [style, setStyle] = useState(transitionStyle);
-  const [hold, setHold] = useState(transitionHoldSeconds);
   const [job, setJob] = useState(initialJob);
   const [dirty, setDirty] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -163,8 +139,6 @@ export function TimelineEditor({
             "content-type": "application/json",
           },
           body: JSON.stringify({
-            transition_style: style,
-            transition_hold_seconds: hold,
             slots: normalizeSlots(slots).map((slot) => ({
               id: slot.id,
               sort_index: slot.sortIndex,
@@ -184,8 +158,6 @@ export function TimelineEditor({
         // this one -- and the next save creates duplicate slots.
         const saved = (await response.json()) as MovieDetail;
         setSlots(normalizeSlots(saved.slots));
-        setStyle(saved.transitionStyle);
-        setHold(saved.transitionHoldSeconds);
         setDirty(false);
         router.refresh();
       } catch (caught) {
@@ -348,46 +320,12 @@ export function TimelineEditor({
         <div className="stack-sm">
           <span className="eyebrow">Transitions</span>
           <p className="text-soft">
-            Clips are joined by a blue and orange brand card. Direction and
-            colour vary at every cut, seeded from this movie, so the sequence is
-            different each time but identical on a re-render.
+            Every cut is covered by the brand sweep. It plays over the join
+            rather than between the clips, so a transition adds no time to the
+            movie: the finished length is exactly the clips. Replace the sweep
+            on the Brand Sweep page. Clips shorter than the sweep itself cut
+            straight through, with nothing over them.
           </p>
-        </div>
-
-        <div className="form-grid md:grid-cols-2">
-          <div className="field">
-            <label htmlFor="transition-style">Style</label>
-            <select
-              id="transition-style"
-              onChange={(event) => { setDirty(true); setStyle(event.target.value); }}
-              value={style}
-            >
-              {transitionStyles.map((option) => (
-                <option key={option} value={option}>
-                  {option}
-                </option>
-              ))}
-            </select>
-            <p className="text-soft">{STYLE_BLURB[style] ?? ""}</p>
-          </div>
-
-          <div className="field">
-            <label htmlFor="transition-hold">Hold (seconds)</label>
-            <input
-              id="transition-hold"
-              max={3}
-              min={0}
-              onChange={(event) => { setDirty(true); setHold(clampHold(event.target.value, hold)); }}
-              step={0.1}
-              type="number"
-              value={hold}
-            />
-            <p className="text-soft">
-              {hold === 0
-                ? "Zero holds means hard cuts with no brand card."
-                : `Adds ${(hold * Math.max(0, filledSlots - 1)).toFixed(1)}s across ${Math.max(0, filledSlots - 1)} transition${filledSlots === 2 ? "" : "s"}.`}
-            </p>
-          </div>
         </div>
       </section>
 

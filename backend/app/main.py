@@ -10,9 +10,9 @@ from backend.app.migrations import (
     ensure_foreign_key_actions,
     ensure_media_columns,
     ensure_nullable_columns,
-    ensure_single_brand_logo,
+    drop_legacy_logo_table,
 )
-from backend.app.routers import admin, auth, clips, config, jobs, logos, movies, videos
+from backend.app.routers import admin, auth, clips, config, jobs, movies, sweeps, videos
 from backend.app.services.render_worker import requeue_stale_jobs
 from backend.app.storage import ensure_storage_dirs
 
@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
     ensure_media_columns(engine)
     ensure_nullable_columns(engine)
     ensure_foreign_key_actions(engine)
-    ensure_single_brand_logo(engine)
+    drop_legacy_logo_table(engine)
     with SessionLocal() as db:
         requeue_stale_jobs(db)
     yield
@@ -58,7 +58,7 @@ def versioned_health():
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(config.router, prefix="/api/v1")
 app.include_router(clips.router, prefix="/api/v1")
-app.include_router(logos.router, prefix="/api/v1")
+app.include_router(sweeps.router, prefix="/api/v1")
 app.include_router(movies.router, prefix="/api/v1")
 app.include_router(jobs.router, prefix="/api/v1")
 app.include_router(videos.router, prefix="/api/v1")

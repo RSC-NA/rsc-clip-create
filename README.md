@@ -6,7 +6,7 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 
 - A Next.js App Router frontend at the repo root
 - A FastAPI backend in [`backend/`](/Users/monty/Projects/clip_create/backend)
-- MySQL-oriented SQLAlchemy models for users, clips, movies, team logos, render jobs,
+- MySQL-oriented SQLAlchemy models for users, clips, movies, brand sweeps, render jobs,
   render attempts, clip-level diagnostics, and videos
 - Admin-only pages for users, videos, and render errors
 
@@ -16,7 +16,7 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 - `/logout`
 - `/movies`
 - `/movies/new`
-- `/logos`
+- `/sweeps`
 - `/movies/[movieId]/edit`
 - `/admin`
 - `/admin/users`
@@ -37,10 +37,10 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 - `GET /api/v1/config`
 - `GET /api/v1/clips`
 - `POST /api/v1/clips`
-- `GET /api/v1/logos`
-- `POST /api/v1/logos`
-- `GET /api/v1/logos/{logo_id}/file`
-- `DELETE /api/v1/logos/{logo_id}`
+- `GET /api/v1/sweeps`
+- `POST /api/v1/sweeps`
+- `GET /api/v1/sweeps/{sweep_id}/file`
+- `DELETE /api/v1/sweeps/{sweep_id}`
 - `GET /api/v1/jobs/{job_id}`
 - `GET /api/v1/videos/{video_id}/location`
 - `GET /api/v1/videos/{video_id}/file`
@@ -57,10 +57,10 @@ The backend stores the parsed metadata, requires at least two clips for a render
 renders in two FFmpeg passes:
 
 1. **Normalize.** Each clip is scaled and padded to 1920x1080 at 30fps with a stereo
-   48kHz track, and its three-line `team / player / tier` label is burned into the
-   bottom left, next to the team logo if one is on file.
-2. **Join.** The normalized clips are chained with `xfade`, passing through a generated
-   blue-and-orange brand sting at every cut.
+   48kHz track, and its one-line `team · player · tier` label is burned into the
+   bottom left.
+2. **Join.** The normalized clips are concatenated with hard cuts, and the brand sweep
+   is overlaid across each cut so the join happens while the sweep hides the picture.
 
 Install FFmpeg and FFprobe on the worker host, then run the worker alongside the API:
 
@@ -105,74 +105,86 @@ Any other font works the same way. Whatever you choose needs a glyph for `·` (U
 or every separator renders as a `.notdef` box; there is a test that checks this for the
 bundled face.
 
-## Brand logo
+## Brand sweep
 
-One logo per account, shown in the centre of every transition sting. Upload it at
-`/logos`; re-uploading replaces it.
+Every cut between clips is covered by the **brand sweep** — a stinger with an alpha
+channel that sweeps in, hides the picture completely, and breaks away again. The clips
+cut underneath it, at the moment it is fully opaque.
 
-This used to be a per-team library: logos were tagged with a team name, matched against
-the `team` token in each clip's filename, and composited into the clip's bottom-left
-label. Clip labels are text-only now, and the mark appears at the transitions instead.
-The migration collapses any existing per-team rows to one per user, keeping the most
-recent, and drops the team columns.
-
-A missing logo, an unreadable file, or a row pointing at a deleted file all degrade to a
-plain sting -- it never fails a render. `RENDER_STING_LOGO_SCALE` (default `0.34`) sets
-the size as a fraction of the frame's shorter side.
-
-Note the migration removes surplus rows in SQL, which does not unlink their files. Run
-`python -m backend.app.maintenance audit --fix` afterwards to clear them.
-
-## Transitions
-
-Clips are joined by a brand sting rather than a hard cut. Each movie chooses a style and
-a hold duration in the editor; the renderer then varies the specific transition,
-direction and lead colour at every boundary.
-
-| Style | Character |
-| --- | --- |
-| `sweep` | Wipes, slides and covers |
-| `slice` | Hard-edged slices and diagonals |
-| `dissolve` | Dissolves, pixelisation and grain |
-| `pop` | Circles, zooms and squeezes |
-| `storm` | Wind and blur |
-| `classic` | A plain crossfade through the card |
-
-Choices are seeded from `sha256(movie_id:boundary_index)`, so adjacent transitions differ
-while a re-render of the same movie reproduces the same sequence. A sting is left by the
-mirror of the transition that entered it, so motion carries through the card.
-
-Timing is planned in **integer frames, never seconds**. `xfade` snaps its offsets to frame
-boundaries while `acrossfade` is sample-exact, so a plan expressed in floating-point
-seconds drifts audio away from video a little at every boundary and the error accumulates.
-At 30fps/48kHz one frame is exactly 1600 samples, so a frame-based plan is exact for both
-streams.
-
-A transition adds its hold to the running time:
+The sweep is composited *on top of* the joined timeline rather than spliced into it. That
+is the whole design, and it has two consequences worth knowing:
 
 ```
-duration = sum(clip durations) + (clip count - 1) x hold
+clip A ─────────────┐
+                    │ hard cut
+clip B              └─────────────
+          [ sweep overlaid ]
+           ░▒▓█████▓▒░
+               ▲ the cut, hidden under full coverage
 ```
 
-Set the hold to `0` for hard cuts. Clips too short to carry the blend clamp it
-automatically, and degrade to a hard cut rather than failing.
+- **A transition costs no time.** A movie is exactly as long as its clips:
+  `duration = sum(clip durations)`.
+- **The sweep must have alpha.** Spliced in as its own segment, its transparent head and
+  tail would flatten onto black and dip the picture at every join.
+
+The file bundled at `backend/app/assets/stings/brand-sweep.mov` is used by default, so a
+fresh checkout renders the real transition with no setup. It is 1920x1080 QuickTime RLE,
+44 frames at 30fps, fully opaque from frame 10 to 32 — so the cut lands on frame 21.
+
+### Changing the sweep
+
+Three places, in the order the renderer consults them:
+
+1. Upload one at `/sweeps` — one per account; re-uploading replaces it.
+2. `RENDER_BRAND_SWEEP_PATH`, for a deployment-wide override.
+3. The bundled file.
+
+A replacement needs an alpha channel and should reach full opacity somewhere in the
+middle; that opaque span is what hides the cut. **Nothing needs recomputing when you swap
+it.** Each render measures the sweep's alpha, one mean value per frame, and puts the cut
+in the middle of the covered span. A file that never fully covers falls back to its own
+midpoint with a warning rather than failing.
+
+Uploads are checked with ffprobe on the way in — the extension is not taken as evidence —
+and capped at `MAX_BRAND_SWEEP_BYTES` (200MB), enforced during the write. Any audio on
+the sweep is ignored; the movie's audio is the clips, hard-cut.
+
+A missing file, an unreadable one, or a row pointing at a deleted file degrades to a
+plain cut. A transition is decoration; it never fails a render.
+
+Replacing the brand logo with this dropped three things: the per-movie transition style
+and hold controls, the generated blue-and-orange wedge card, and the brand logo that sat
+in the middle of it. The `logos` table is dropped at startup; its uploaded files are left
+on disk, so run `python -m backend.app.maintenance audit --fix` to clear them.
+
+### Clips shorter than the sweep
+
+A cut only carries a sweep when **both** adjacent clips are at least as long as the sweep
+itself (~1.5s). Otherwise the sweep would run past the clip on the far side, or collide
+with the sweep on the other end of it. Such cuts render bare, with a warning, rather than
+failing.
+
+That test is on the two adjacent clips alone, never on where the cut lands in the finished
+movie — which is what lets the decision survive group rendering unchanged.
 
 ### Why rendering happens in groups
 
-Chained `xfade` filters buffer heavily. Measured at 1080p, peak memory was 1.69GB for
-two clips and 4.61GB for seven — at which point the OOM killer took the worker, and the
-only thing recorded was 2000 characters of ffmpeg progress output, because `frame=` lines
-had pushed the real error out of the captured tail.
+Transitions used to be chained `xfade` filters, which buffer heavily: measured at 1080p,
+peak memory was 1.69GB for two clips and 4.61GB for seven — at which point the OOM killer
+took the worker, and the only thing recorded was 2000 characters of ffmpeg progress
+output, because `frame=` lines had pushed the real error out of the captured tail.
 
-Clips are therefore joined in groups of `RENDER_CHUNK_SIZE` (default 4) and the group
-outputs joined again, recursively. The same seven-clip movie now peaks at 2.96GB. Each
-extra level costs one more re-encode generation, which is why the default is 4 rather
-than 2.
+Overlaying the sweep is far cheaper, but clips are still joined in groups of
+`RENDER_CHUNK_SIZE` (default 4) and the group outputs joined again, recursively, because
+that also bounds the number of decoders open at once.
 
-Transition choices are seeded by a boundary's **global** index and decided before any
-grouping, so how the work is divided never changes what the output looks like.
+A sweep straddling a group seam is placed at the outer level, against the group outputs.
+Deciding a boundary and placing it are separate steps for exactly this reason: a boundary
+is placed twice but decided once, so how the work is divided never changes what the
+output looks like.
 
-If a render still dies, the error now says so plainly — `FFmpeg was killed by SIGKILL` —
+If a render still dies, the error says so plainly — `FFmpeg was killed by SIGKILL` —
 rather than dumping progress output. Lower `RENDER_CHUNK_SIZE` or give the container more
 memory.
 
@@ -242,9 +254,11 @@ Every value has a working default. The ones you are most likely to change:
 | `DISCORD_CLIENT_ID` / `_SECRET` | placeholders | Required once `AUTH_ENABLED=true`. |
 | `DISCORD_REDIRECT_URI` | `http://localhost:8000/api/v1/auth/discord/callback` | Must match the Discord app exactly. |
 | `ADMIN_DISCORD_IDS` | `[]` | JSON array string, e.g. `["123456789012345678"]`. |
-| `FASTAPI_PUBLIC_URL` | `http://localhost:8000` | Browser-facing; the API builds absolute download and logo URLs from it, so it must be reachable from the host, not from inside the compose network. |
+| `FASTAPI_PUBLIC_URL` | `http://localhost:8000` | Browser-facing; the API builds absolute download and brand sweep URLs from it, so it must be reachable from the host, not from inside the compose network. |
 | `SECURE_COOKIES` | `false` | Set to `true` behind HTTPS. |
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | **Total bytes per upload request**, across every file in it. See below. |
+| `RENDER_BRAND_SWEEP_PATH` | the bundled sweep | Deployment-wide override for the stinger played over every cut. An account's own upload still wins. |
+| `MAX_BRAND_SWEEP_BYTES` | `209715200` (200 MB) | Cap on a brand sweep upload. The bundled file is 90MB; alpha-capable codecs are not small. |
 
 ### Upload size
 
@@ -270,9 +284,9 @@ uploading in smaller batches over setting it very high.
 
 The image installs Debian's ffmpeg (currently 7.1.x); development happens against 8.x.
 The renderer is written to work on both, but that took a fix: `setpts` clears a filter
-link's frame-rate metadata, and ffmpeg 7's `xfade` rejects an input whose rate reads as
-`1/0` where 8 tolerates it. Every branch feeding `xfade` therefore re-asserts `fps`
-*after* `setpts`. If you change the filter graph, run the integration suite against the
+link's frame-rate metadata, and ffmpeg 7's `concat` and `overlay` reject an input whose
+rate reads as `1/0` where 8 tolerates it. Every branch feeding them therefore re-asserts
+`fps` *after* `setpts`. If you change the filter graph, run the integration suite against the
 container's ffmpeg as well as your own — this class of bug is invisible locally.
 
 ## Local development
@@ -355,9 +369,9 @@ npm run typecheck && npm run lint && npm run build
 `pytest` runs from the repo root with no `PYTHONPATH` (see `pyproject.toml`), and
 integration tests are deselected by default because they shell out to ffmpeg.
 
-The suite covers the Discord auth helpers, the filename parser, brand decisions
-(including reproducibility across processes with different `PYTHONHASHSEED`), the
-transition arithmetic asserted against hand-worked frame numbers, every HTTP endpoint
+The suite covers the Discord auth helpers, the filename parser, the label and the
+choice of where in the sweep the cut lands, the sweep placement asserted against
+hand-worked frame numbers, every HTTP endpoint
 (auth, ownership, validation, 404/409/422), deletion ordering against enforced foreign
 keys, and real ffmpeg renders.
 
@@ -375,14 +389,15 @@ pytest -m integration
 That renders them and writes `test-output/samples/` for inspection:
 
 - `render.mp4` — the finished reel
-- `frames/clip-N.png` — the middle of each clip, to check the label and logo
-- `frames/sting-N.png` — the middle of each transition, to check colour and direction
+- `frames/clip-N.png` — the middle of each clip, to check the label
+- `frames/cut-N.png` — the exact frame of each cut, where the sweep should be covering
+  the picture completely; if the clips are visible in one, the sweep drifted off its cut
 - `report.html` — the computed plan side by side with the measured result
 - `summary.json` — the same, machine-readable
 
 The sample tests skip cleanly when that directory is empty, so the suite stays green
-until footage is added. Cover both label layouts by giving one team a logo and leaving
-another without one — the harness does this automatically for the first team it finds.
+until footage is added. Include at least one clip shorter than the sweep (under ~1.5s)
+to exercise the bare-cut path alongside the swept one.
 
 ## Maintenance
 

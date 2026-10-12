@@ -41,7 +41,7 @@ class User(TimestampMixin, Base):
     movies: Mapped[list["Movie"]] = relationship(back_populates="user")
     clips: Mapped[list["Clip"]] = relationship(back_populates="user")
     oauth_accounts: Mapped[list["OAuthAccount"]] = relationship(back_populates="user")
-    logos: Mapped[list["Logo"]] = relationship(back_populates="user")
+    brand_sweeps: Mapped[list["BrandSweep"]] = relationship(back_populates="user")
 
 
 class OAuthAccount(TimestampMixin, Base):
@@ -85,22 +85,25 @@ class Clip(TimestampMixin, Base):
     user: Mapped[User] = relationship(back_populates="clips")
 
 
-class Logo(TimestampMixin, Base):
-    """The brand logo, shown in the centre of every transition sting.
+class BrandSweep(TimestampMixin, Base):
+    """The stinger played over every cut between clips.
 
-    One per user: this was previously a per-team library matched against the
-    team token in a clip's filename, and clip labels are text-only now.
+    One per user, and optional: an account with no row of its own renders with
+    the sweep bundled in the image. This replaced a brand logo -- a still image
+    composited into a generated transition card -- which replaced a per-team
+    logo library before that.
     """
 
-    __tablename__ = "logos"
-    __table_args__ = (UniqueConstraint("user_id", name="uq_logos_user"),)
+    __tablename__ = "brand_sweeps"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_brand_sweeps_user"),)
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uuid_value)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     original_name: Mapped[str] = mapped_column(String(255))
     storage_path: Mapped[str] = mapped_column(Text)
+    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
 
-    user: Mapped[User] = relationship(back_populates="logos")
+    user: Mapped[User] = relationship(back_populates="brand_sweeps")
 
 
 class Movie(TimestampMixin, Base):
@@ -113,8 +116,6 @@ class Movie(TimestampMixin, Base):
     latest_video_id: Mapped[str | None] = mapped_column(
         ForeignKey("videos.id"), nullable=True
     )
-    transition_style: Mapped[str | None] = mapped_column(String(32), nullable=True)
-    transition_hold_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     user: Mapped[User] = relationship(back_populates="movies")
     slots: Mapped[list["MovieSlot"]] = relationship(

@@ -1,18 +1,19 @@
 """Real ffmpeg renders against generated clips.
 
-These prove the offset arithmetic against the actual filter graph rather than
-against itself. Skipped when ffmpeg is unavailable so the default suite stays
-fast and portable.
+These prove the placement arithmetic against the actual filter graph rather
+than against itself. Skipped when ffmpeg is unavailable so the default suite
+stays fast and portable.
 """
 
 import pytest
 
 from backend.app.filename_parser import ParsedClipName
-from backend.app.services.brand import TRANSITION_FAMILIES
+from backend.app.services.brand import BUNDLED_SWEEP
 from backend.app.services.renderer import (
     ClipSpec,
     RenderError,
     RenderOptions,
+    load_sweep,
     render_movie,
 )
 from backend.app.storage import probe_media
@@ -26,8 +27,7 @@ SAMPLES_PER_FRAME = 48000 // FPS
 
 
 def _options(**kwargs):
-    defaults = dict(movie_id="itest", fps=FPS, hold_frames=6, blend_frames=3, family="sweep")
-    return RenderOptions(**{**defaults, **kwargs})
+    return RenderOptions(**{**dict(movie_id="itest", fps=FPS), **kwargs})
 
 
 def _specs(paths):
@@ -37,23 +37,65 @@ def _specs(paths):
     ]
 
 
+def _clips(make_media, count, seconds=2):
+    """Two seconds each: long enough on both sides to carry the sweep."""
+    return [make_media(f"Falcons-P{i}-Gold.mp4", seconds=seconds) for i in range(count)]
+
+
+# ---------------------------------------------------------------------------
+# The sweep itself
+# ---------------------------------------------------------------------------
+def test_the_bundled_sweep_measures_as_expected():
+    """The numbers the placement tests are worked against. If a replacement
+    file is dropped in, this is what tells you the plan moved."""
+    sweep = load_sweep(_options())
+    assert sweep is not None
+    assert sweep.path == BUNDLED_SWEEP
+    assert sweep.frames == 44
+    # Fully opaque from frame 10 to 32, so the cut belongs on 21.
+    assert sweep.cover == 21
+    assert sweep.lead_frames + sweep.tail_frames == sweep.frames
+
+
+def test_a_sweep_that_is_not_video_degrades_instead_of_raising(tmp_path):
+    """Every cut renders bare rather than the render failing."""
+    broken = tmp_path / "broken.mov"
+    broken.write_bytes(b"not a video")
+    assert load_sweep(_options(sweep_path=broken)) is None
+
+
+def test_a_missing_sweep_degrades_instead_of_raising(tmp_path):
+    assert load_sweep(_options(sweep_path=tmp_path / "nope.mov")) is None
+
+
+def test_a_sweep_with_no_alpha_still_gets_a_cut_frame(make_media, tmp_path):
+    """testsrc2 is fully opaque throughout, so it never "covers" by the alpha
+    test. The fallback is its midpoint, not a failure."""
+    opaque = make_media("opaque.mp4", seconds=1)
+    sweep = load_sweep(_options(sweep_path=opaque))
+    assert sweep is not None
+    assert sweep.cover == sweep.frames // 2
+
+
+# ---------------------------------------------------------------------------
+# Length and streams
+# ---------------------------------------------------------------------------
 @pytest.mark.parametrize("count", [2, 3, 5])
-def test_duration_is_clips_plus_one_hold_per_boundary(make_media, tmp_path, count):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(count)]
-    options = _options()
+def test_a_transition_adds_no_time_to_the_movie(make_media, tmp_path, count):
+    """The sweep plays over the join rather than between the clips, so the
+    finished movie is exactly as long as its clips."""
+    clips = _clips(make_media, count)
     output = tmp_path / "out.mp4"
 
-    media = render_movie(_specs(clips), output, options)
+    media = render_movie(_specs(clips), output, _options())
 
-    expected_frames = media["frames"]
-    assert media["duration"] == pytest.approx(expected_frames / FPS, abs=1 / FPS)
-    # One hold per boundary, and no more.
-    holds = (count - 1) * options.hold_frames
-    assert expected_frames == sum(s for s in [30] * count) + holds
+    assert media["frames"] == 60 * count
+    assert media["duration"] == pytest.approx(media["frames"] / FPS, abs=1 / FPS)
+    assert all(not t.get("hard_cut") for t in media["transitions"])
 
 
 def test_audio_and_video_stay_in_lockstep(make_media, tmp_path):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
+    clips = _clips(make_media, 3)
     output = tmp_path / "out.mp4"
 
     render_movie(_specs(clips), output, _options())
@@ -64,10 +106,10 @@ def test_audio_and_video_stay_in_lockstep(make_media, tmp_path):
 
 
 def test_a_clip_without_audio_still_renders(make_media, tmp_path):
-    """render_clip always opens an anullsrc so pass 2 can map audio blindly."""
+    """normalize_clip always opens an anullsrc so pass 2 can map audio blindly."""
     clips = [
-        make_media("Falcons-A-Gold.mp4", seconds=1, audio=False),
-        make_media("Falcons-B-Gold.mp4", seconds=1, audio=True),
+        make_media("Falcons-A-Gold.mp4", seconds=2, audio=False),
+        make_media("Falcons-B-Gold.mp4", seconds=2, audio=True),
     ]
     output = tmp_path / "out.mp4"
 
@@ -77,29 +119,39 @@ def test_a_clip_without_audio_still_renders(make_media, tmp_path):
     assert media["duration"] > 0
 
 
-def test_zero_hold_produces_hard_cuts_and_no_added_time(make_media, tmp_path):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
-    output = tmp_path / "out.mp4"
+# ---------------------------------------------------------------------------
+# Placement
+# ---------------------------------------------------------------------------
+def test_each_sweep_is_centred_on_its_cut(make_media, tmp_path):
+    clips = _clips(make_media, 3)
+    media = render_movie(_specs(clips), tmp_path / "out.mp4", _options())
 
-    media = render_movie(_specs(clips), output, _options(hold_frames=0))
+    cover = media["sweep"]["cover"]
+    assert [t["start"] + cover for t in media["transitions"]] == [60, 120]
+
+
+def test_clips_shorter_than_the_sweep_cut_bare(make_media, tmp_path):
+    """A 15-frame clip cannot carry a 44-frame sweep on either side of it."""
+    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=0.5) for i in range(3)]
+    media = render_movie(_specs(clips), tmp_path / "out.mp4", _options())
 
     assert all(t.get("hard_cut") for t in media["transitions"])
-    assert media["frames"] == 90
+    assert media["frames"] == 45
 
 
-@pytest.mark.parametrize("family", sorted(TRANSITION_FAMILIES))
-def test_every_transition_family_renders(make_media, tmp_path, family):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(2)]
-    output = tmp_path / f"{family}.mp4"
+def test_a_missing_sweep_renders_the_whole_movie_bare(make_media, tmp_path):
+    clips = _clips(make_media, 3)
+    media = render_movie(
+        _specs(clips), tmp_path / "out.mp4", _options(sweep_path=tmp_path / "gone.mov")
+    )
 
-    media = render_movie(_specs(clips), output, _options(family=family))
+    assert media["sweep"] is None
+    assert all(t.get("hard_cut") for t in media["transitions"])
+    assert media["frames"] == 180
 
-    assert output.stat().st_size > 0
-    assert media["transitions"][0]["family"] == family
 
-
-def test_the_transition_sequence_is_reproducible(make_media, tmp_path):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
+def test_the_placement_is_reproducible(make_media, tmp_path):
+    clips = _clips(make_media, 3)
 
     first = render_movie(_specs(clips), tmp_path / "a.mp4", _options())
     second = render_movie(_specs(clips), tmp_path / "b.mp4", _options())
@@ -107,38 +159,26 @@ def test_the_transition_sequence_is_reproducible(make_media, tmp_path):
     assert first["transitions"] == second["transitions"]
 
 
-def test_a_different_movie_gets_different_transitions(make_media, tmp_path):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
+def test_grouping_does_not_move_a_single_sweep(make_media, tmp_path, monkeypatch):
+    """Chunked rendering places a boundary against its group and then against
+    the group outputs. Neither the decision nor the finished length may change
+    with the chunk size."""
+    from backend.app.services import renderer as renderer_module
 
-    a = render_movie(_specs(clips), tmp_path / "a.mp4", _options(movie_id="one"))
-    b = render_movie(_specs(clips), tmp_path / "b.mp4", _options(movie_id="two"))
+    clips = _clips(make_media, 5)
 
-    assert [t["in"] for t in a["transitions"]] != [t["in"] for t in b["transitions"]] or \
-           [t["axis"] for t in a["transitions"]] != [t["axis"] for t in b["transitions"]]
+    monkeypatch.setattr(renderer_module.settings, "render_chunk_size", 8)
+    whole = render_movie(_specs(clips), tmp_path / "whole.mp4", _options())
+    monkeypatch.setattr(renderer_module.settings, "render_chunk_size", 2)
+    grouped = render_movie(_specs(clips), tmp_path / "grouped.mp4", _options())
 
-
-def test_the_brand_logo_renders_into_the_stings(make_media, tmp_path, make_logo):
-    """One logo for the whole movie, centred in each transition -- not the
-    per-clip, per-team marks the labels used to carry."""
-    from pathlib import Path
-
-    logo = Path(make_logo().storage_path)
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
-    output = tmp_path / "out.mp4"
-
-    media = render_movie(_specs(clips), output, _options(sting_logo_path=logo))
-
-    assert output.stat().st_size > 0
-    assert len([t for t in media["transitions"] if not t.get("hard_cut")]) == 2
+    assert whole["frames"] == grouped["frames"]
+    assert whole["transitions"] == grouped["transitions"]
 
 
-def test_a_movie_with_no_brand_logo_still_renders(make_media, tmp_path):
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(2)]
-    output = tmp_path / "out.mp4"
-    render_movie(_specs(clips), output, _options(sting_logo_path=None))
-    assert output.stat().st_size > 0
-
-
+# ---------------------------------------------------------------------------
+# Failures
+# ---------------------------------------------------------------------------
 def test_a_missing_source_fails_with_an_attributable_stage(tmp_path):
     specs = _specs([tmp_path / "does-not-exist.mp4"])
     with pytest.raises(RenderError) as caught:
@@ -158,9 +198,33 @@ def test_too_many_clips_is_refused_before_ffmpeg_runs(make_media, tmp_path, monk
     from backend.app.services import renderer as renderer_module
 
     monkeypatch.setattr(renderer_module.settings, "render_max_graph_inputs", 2)
-    clips = [make_media(f"Falcons-P{i}-Gold.mp4", seconds=1) for i in range(3)]
+    clips = _clips(make_media, 3, seconds=1)
 
     with pytest.raises(RenderError) as caught:
         render_movie(_specs(clips), tmp_path / "out.mp4", _options())
     assert caught.value.stage == "input"
     assert "at most" in str(caught.value)
+
+
+def test_the_heartbeat_ticks_through_the_join_not_just_the_normalize(
+    make_media, tmp_path, monkeypatch
+):
+    """Regression: on_progress fired once per normalized clip and once per
+    encoded sting. Overlaying the sweep removed the sting encodes, and with
+    them every ping during the join -- 78s of a measured 104s six-clip render
+    passed with the heartbeat untouched, which requeue_stale_jobs reads as a
+    dead worker."""
+    from backend.app.services import renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module.settings, "render_chunk_size", 2)
+    clips = _clips(make_media, 5, seconds=1)
+
+    beats = []
+    render_movie(
+        _specs(clips), tmp_path / "out.mp4", _options(), on_progress=lambda: beats.append(1)
+    )
+
+    # One per clip, plus one per group join and one for the final join.
+    assert len(beats) > len(clips), (
+        f"{len(beats)} heartbeats for {len(clips)} clips: the join phase is silent"
+    )

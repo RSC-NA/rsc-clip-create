@@ -17,10 +17,7 @@ COLUMN_ADDITIONS: dict[str, dict[str, str]] = {
     },
     "videos": {"duration_seconds": "FLOAT", "metadata_json": "JSON"},
     "render_jobs": {"heartbeat_at": "DATETIME"},
-    "movies": {
-        "transition_style": "VARCHAR(32)",
-        "transition_hold_seconds": "FLOAT",
-    },
+    "brand_sweeps": {"duration_seconds": "FLOAT"},
 }
 
 # Columns whose NOT NULL constraint has since been relaxed.
@@ -108,55 +105,26 @@ def ensure_foreign_key_actions(engine: Engine) -> None:
                 break
 
 
-def ensure_single_brand_logo(engine: Engine) -> None:
-    """Collapse the old per-team logo library into one brand logo per user.
+def drop_legacy_logo_table(engine: Engine) -> None:
+    """Remove the brand logo table. Transitions are a video now.
 
-    The table previously held one row per (user, team) and was matched against
-    the team token in a clip's filename. Clip labels are text-only now and the
-    logo is drawn in the centre of each transition sting, so a user has exactly
-    one. Existing rows are collapsed to the most recent per user rather than
-    dropped, and the columns and constraint that encoded the old shape go away.
+    The logo was a still image composited into a generated transition card.
+    Both are gone: every cut is covered by the brand sweep, so the rows point
+    at images nothing can use. Dropping the table is the migration -- there is
+    no shape the old data could be carried forward into.
+
+    The uploaded files under ``storage/logos`` are left alone; deleting a
+    user's uploads is not this function's business, and the orphan scan in
+    maintenance.py reports them.
 
     MySQL only; SQLite builds its schema fresh from the models in tests.
     """
     if engine.dialect.name != "mysql":
         return
 
-    inspector = inspect(engine)
-    if not inspector.has_table("logos"):
+    if not inspect(engine).has_table("logos"):
         return
 
-    columns = {column["name"] for column in inspector.get_columns("logos")}
-    constraints = {c.get("name") for c in inspector.get_unique_constraints("logos")}
-    indexes = {index.get("name") for index in inspector.get_indexes("logos")}
-
+    logger.info("dropping the legacy logos table; transitions use the brand sweep")
     with engine.begin() as connection:
-        if "team_normalized" in columns:
-            # Keep the newest row per user; anything older loses its meaning
-            # once the logo is no longer team-specific.
-            removed = connection.execute(
-                text(
-                    "DELETE l FROM logos l "
-                    "JOIN logos newer "
-                    "  ON newer.user_id = l.user_id "
-                    " AND (newer.created_at > l.created_at "
-                    "      OR (newer.created_at = l.created_at AND newer.id > l.id))"
-                )
-            ).rowcount
-            if removed:
-                logger.info("collapsed %d surplus logo row(s) to one per user", removed)
-
-        if "uq_logos_user_team" in constraints or "uq_logos_user_team" in indexes:
-            logger.info("dropping the per-team logo constraint")
-            connection.execute(text("ALTER TABLE logos DROP INDEX uq_logos_user_team"))
-
-        for column in ("team_normalized", "team"):
-            if column in columns:
-                logger.info("dropping column logos.%s", column)
-                connection.execute(text(f"ALTER TABLE logos DROP COLUMN {column}"))
-
-        if "uq_logos_user" not in constraints and "uq_logos_user" not in indexes:
-            logger.info("adding the one-logo-per-user constraint")
-            connection.execute(
-                text("ALTER TABLE logos ADD CONSTRAINT uq_logos_user UNIQUE (user_id)")
-            )
+        connection.execute(text("DROP TABLE logos"))

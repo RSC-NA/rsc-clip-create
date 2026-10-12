@@ -13,7 +13,7 @@ from backend.app.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-STORAGE_FOLDERS = ("clips", "renders", "logos")
+STORAGE_FOLDERS = ("clips", "renders", "sweeps")
 _COPY_CHUNK = 1024 * 1024
 
 

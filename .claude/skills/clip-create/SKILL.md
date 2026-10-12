@@ -99,14 +99,14 @@ with a stroke and no backing plate. The face is Anton, vendored at
 `backend/app/assets/fonts/` -- Ultimatum, which was asked for, is not on Google Fonts.
 `RENDER_FONT_PATH` overrides it. A replacement font needs a `·` (U+00B7) glyph.
 
-**The brand logo** is one per user (`Logo`, unique on `user_id`), centred in every
-transition sting by `brand.create_sting_image`. It was a per-team library matched on the
-filename's team token and composited into the label; `ensure_single_brand_logo` migrates
-that shape away. Sized against the *frame*, not the oversized pan canvas, so it looks the
-same whichever way a sweep travels.
+**The brand sweep** is the stinger overlaid across every cut. The bundled file at
+`backend/app/assets/stings/brand-sweep.mov` is the default; `RENDER_BRAND_SWEEP_PATH`
+overrides it deployment-wide, and a `BrandSweep` row (one per user, unique on `user_id`)
+overrides both. It replaced a brand logo composited into a generated wedge card, which
+replaced a per-team logo library; `drop_legacy_logo_table` clears the last of that.
 
 **Filenames are the contract.** Uploads must be `team-player-tier.ext`, parsed by
-`backend/app/filename_parser.py` into the three-line label burned bottom-left. The regex is
+`backend/app/filename_parser.py` into the one-line label burned bottom-left. The regex is
 duplicated in `app/components/create-movie-form.tsx` and the two copies **do not agree**
 (see Known issues). If you touch either, fix both or delete the client copy.
 
@@ -131,7 +131,8 @@ is deliberately not used as a context manager: entering it runs `lifespan`, whic
 
 To render real footage, drop clips named `team-player-tier.ext` into
 `backend/tests/fixtures/samples/` and run `pytest -m integration`; it writes
-`test-output/samples/report.html` with frames from the middle of every clip and sting.
+`test-output/samples/report.html` with a frame from the middle of every clip and one at
+every cut -- where the sweep should be covering the picture completely.
 
 ## Render pipeline (read before touching renderer.py)
 
@@ -139,23 +140,29 @@ Two passes, in `backend/app/services/`:
 
 1. `renderer.normalize_clip` -- one ffmpeg call per clip: scale/pad to 1920x1080 at 30fps,
    always emit a stereo 48kHz track, burn the label from `brand.create_label_image`.
-2. `renderer.build_chain_command` -- one filter graph joining the normalized clips with
-   `xfade`, passing through a generated brand sting at each boundary.
+2. `renderer.build_chain_command` -- one `concat` joining the normalized clips with hard
+   cuts, then one `overlay` per cut compositing the brand sweep across it.
 
-**Timing is planned in integer frames, never seconds.** `xfade` snaps offsets to frame
-boundaries while `acrossfade` is sample-exact, so a plan in floating-point seconds drifts
-audio from video at every boundary and accumulates. 30fps/48kHz means one frame is exactly
-1600 samples. If you touch the arithmetic, `backend/tests/test_renderer_planning.py`
-asserts the offsets against hand-worked numbers -- run it before anything else.
+**The sweep is overlaid, never spliced in.** It has an alpha channel; as its own segment
+the transparent head and tail would flatten onto black and dip the picture at every join.
+The consequence to hold onto: **a transition costs no time**, so a movie is exactly
+`sum(clip frames)` long. Anything that adds a hold has reintroduced the old model.
 
-The running offsets, where `L_i` is the accumulated length after clip `i`:
+**Timing is planned in integer frames, never seconds.** `trim=end_frame` and `tpad=start`
+both take frame counts, and 30fps/48kHz means one frame is exactly 1600 samples, so one
+plan is exact for video and audio at once. If you touch the arithmetic,
+`backend/tests/unit/test_renderer_planning.py` asserts placements against hand-worked
+numbers -- run it before anything else.
+
+Where `C_i` is the cumulative frame count through clip `i` and `cover` is the frame of the
+sweep at which it hides the picture:
 
 ```
-O_sting(i)  = L_i - b        O_clip(i+1) = L_i + d        L_(i+1) = L_i + d + N_(i+1)
+start_i = C_i - cover                       total = sum(clip frames)
 ```
 
-`offset` is relative to the *accumulated* first input, so it must be recomputed after every
-join. Total = `sum(clip frames) + (n-1) x hold`.
+`start` is relative to whichever segment list is being joined, so it must be recomputed
+per group -- `place_boundaries` does that, `decide_boundaries` must not.
 
 `build_chain_command` is a pure function returning `list[str]` -- keep it that way. The
 graph string is the part most likely to be subtly wrong and this is what makes it
@@ -163,16 +170,19 @@ assertable without running ffmpeg.
 
 ## Brand decisions (`services/brand.py`)
 
-Pure Pillow, no ffmpeg, no DB. Style/direction/colour are seeded by
-`sha256(f"{movie_id}:{index}:{salt}")`. **Never `random.seed()`** (global state in a
-long-lived worker) and **never `hash()`** (randomized per process by PYTHONHASHSEED --
-there is a test that catches a regression to it). A sting is left by the `MIRROR` of the
-transition that entered it; lead colour strictly alternates on boundary parity rather than
-hashing, because hashing clumps three blues in a row often enough to look like a bug.
+Pure: Pillow for the label, arithmetic for the sweep. No ffmpeg, no DB. It used to hold
+the transition families, the seeded style/direction/colour picks and the wedge-card
+generator; all of that went with the logo.
 
-Logos are matched by `normalize_team()` against the `team` token from the filename. A
-missing, unmatched, or unreadable logo must always degrade to the text-only label -- it
-must never fail a render.
+`cover_frame()` is the one decision left. Given one mean-alpha value per frame it returns
+the middle of the fully-covered span -- the frame the clips should cut on. The threshold
+is 250, not 255, so a replacement sweep with a soft edge still reads as covering. A sweep
+that never covers falls back to its own midpoint. Measuring the alpha is `renderer`'s job
+(it needs ffmpeg); choosing from it is this module's, which is what makes it testable
+against a hand-written list.
+
+Nothing about the sweep may fail a render: a missing, unreadable, or alpha-less file
+degrades to bare cuts. Same for clips too short to carry it.
 
 ## Known issues -- check before "fixing" something that looks intentional
 
@@ -183,13 +193,16 @@ must never fail a render.
 - Removing an ID from `ADMIN_DISCORD_IDS` does not revoke an existing admin
   (`upsert_discord_user` uses `is_admin or ...`). Expired sessions are never reaped.
 - `SameSite=lax` is the only CSRF defence.
-- The join pass opens `2n-1` inputs at once, so movies above
-  `render_max_graph_inputs` (24) are refused at queue time rather than chunked. The
-  limit is file descriptors and decoders, not argv length -- the graph is ~17KB against
-  an `ARG_MAX` of 1MB.
+- The join pass opens `2n-1` inputs at once -- one per clip, one per swept cut -- so
+  movies above `render_max_graph_inputs` (24) are refused at queue time rather than
+  chunked. The limit is file descriptors and decoders, not argv length.
+- `Movie.transition_style` and `transition_hold_seconds` are gone from the model but
+  still exist as columns on any pre-existing MySQL table. Nothing reads them.
+- The bundled sweep is 90MB of QuickTime RLE in git. Swapping it adds another 90MB to
+  history; git cannot delta-compress it.
 - `_video_summary().downloadUrl` is absolute to `fastapi_public_url` rather than the
   `/api/backend` rewrite, so inline playback breaks once frontend and backend are on
-  different hosts. `logo-library.tsx` does it correctly; that page is the outlier.
+  different hosts. `brand-sweep.tsx` does it correctly; that page is the outlier.
 - Uploads have no progress indicator; `fetch` cannot report it, so this needs XHR.
 - The local `backend/.env` ships `AUTH_ENABLED=false` with `AUTH_BYPASS_ADMIN=true`.
   It is gitignored, but it means every unauthenticated request resolves to one shared
@@ -211,17 +224,27 @@ Each of these was a real bug; the pattern matters more than the instance.
   handlers, and note a clip is referenced from *two* tables, not one.
 - **`useState` seeded from props never re-syncs** after `router.refresh()`, which
   re-renders the Server Component without remounting the client one.
-- **Chained `xfade` buffers ~0.8GB per clip at 1080p.** Seven clips in one graph hit
-  4.61GB and were OOM-killed. `join_segments` renders in groups of
-  `render_chunk_size` (4) and joins the outputs. `decide_boundaries` and
-  `place_boundaries` are split for this: a boundary is placed twice (inside its group,
-  then between group outputs) but decided once, by global index, so grouping never
-  changes the output.
+- **Chained `xfade` buffered ~0.8GB per clip at 1080p.** Seven clips in one graph hit
+  4.61GB and were OOM-killed. Overlaying the sweep is far cheaper, but `join_segments`
+  still renders in groups of `render_chunk_size` (4) to bound open decoders.
+  `decide_boundaries` and `place_boundaries` are split for this: a boundary is placed
+  twice (inside its group, then between group outputs) but decided once, so grouping
+  never changes the output. A decision that consulted the cumulative timeline instead of
+  the two adjacent clips would break that.
+- **`media["transitions"]` must report the GLOBAL placement.** `join_segments` re-places
+  a seam boundary against the group outputs it joins, leaving a group-relative `start`
+  on the object; `render_movie` captures the placement before joining for this reason.
+- **`scale` negotiates its output format with whatever is downstream** and will drop to
+  an alpha-less one, which turns the stinger into an opaque rectangle and makes
+  `alphaextract` unsatisfiable ("could not choose their formats"). `sweep_chain` pins
+  `format=rgba` on *both* sides of the scale.
+- **`overlay` needs `eof_action=pass`.** The sweep is 44 frames against a whole movie;
+  the default repeats its last frame over everything after it.
 - **ffmpeg needs `-nostats`.** Progress lines flood stderr and `_run` keeps only the
   last 2000 chars, so a real error gets pushed out. This hid an OOM kill completely.
-- **`setpts` clears a filter link's frame rate.** ffmpeg 7's `xfade` rejects an input
-  reading `1/0`; ffmpeg 8 tolerates it. Every branch feeding `xfade` re-asserts `fps`
-  *after* `setpts`. Development is on 8.x and the container ships 7.x, so verify filter
+- **`setpts` clears a filter link's frame rate.** ffmpeg 7's `concat` and `overlay`
+  reject an input reading `1/0`; ffmpeg 8 tolerates it. Every branch feeding them
+  re-asserts `fps` *after* `setpts`. Development is on 8.x and the container ships 7.x, so verify filter
   changes against both.
 - **Next buffers the entire proxied request body, rewrites included**, capped at 10MB
   by default. This is not exclusive to `proxy.ts` -- assuming otherwise cost a working

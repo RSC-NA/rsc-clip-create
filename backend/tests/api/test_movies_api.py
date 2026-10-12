@@ -22,12 +22,13 @@ def test_create_and_list_movie(client):
     assert [m["title"] for m in listed.json()] == ["Week 4"]
 
 
-def test_movie_detail_carries_transition_settings(client, make_movie):
-    movie = make_movie()
-    body = client.get(f"/api/v1/movies/{movie.id}").json()
-    assert body["transitionStyle"]
-    assert body["transitionHoldSeconds"] >= 0
-    assert "sweep" in body["transitionStyles"]
+def test_movie_detail_carries_no_transition_settings(client, make_movie):
+    """Every cut is covered by the same brand sweep now, so there is nothing
+    per-movie left to choose. The style picker and hold slider are gone."""
+    body = client.get(f"/api/v1/movies/{make_movie().id}").json()
+    assert "transitionStyle" not in body
+    assert "transitionHoldSeconds" not in body
+    assert "transitionStyles" not in body
 
 
 def test_another_users_movie_is_404_not_403(other_client, make_movie):
@@ -78,32 +79,15 @@ def test_another_users_clip_cannot_be_placed(client, make_movie, make_clip, othe
     assert response.status_code == 400
 
 
-def test_unknown_transition_style_is_rejected(client, make_movie):
-    movie = make_movie()
-    response = client.put(
-        f"/api/v1/movies/{movie.id}/timeline",
-        json={"slots": [], "transition_style": "not-a-style"},
-    )
-    assert response.status_code == 422
-
-
-def test_transition_settings_persist(client, make_movie, make_clip):
+def test_retired_transition_fields_are_ignored_not_rejected(client, make_movie, make_clip):
+    """An editor tab left open across the deploy still saves its timeline."""
     movie = make_movie()
     clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
     payload = _slot_payload(clips) | {"transition_style": "storm", "transition_hold_seconds": 1.2}
 
-    body = client.put(f"/api/v1/movies/{movie.id}/timeline", json=payload).json()
-    assert body["transitionStyle"] == "storm"
-    assert body["transitionHoldSeconds"] == 1.2
-
-
-def test_hold_outside_the_allowed_range_is_422(client, make_movie):
-    movie = make_movie()
-    response = client.put(
-        f"/api/v1/movies/{movie.id}/timeline",
-        json={"slots": [], "transition_hold_seconds": 9},
-    )
-    assert response.status_code == 422
+    response = client.put(f"/api/v1/movies/{movie.id}/timeline", json=payload)
+    assert response.status_code == 200
+    assert len(response.json()["slots"]) == 2
 
 
 # ---------------------------------------------------------------------------

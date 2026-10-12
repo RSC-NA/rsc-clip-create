@@ -21,6 +21,8 @@ class ClientConfigResponse(BaseModel):
     maxClipSizeBytes: int
     maxUploadBytes: int
     maxClipDurationSeconds: float
+    supportedSweepFormats: list[str]
+    maxBrandSweepBytes: int
 
 
 class ClipResponse(BaseModel):
@@ -37,11 +39,12 @@ class ClipResponse(BaseModel):
     extension: str | None
 
 
-class LogoResponse(BaseModel):
+class BrandSweepResponse(BaseModel):
     id: str
     originalName: str
     storagePath: str
-    imageUrl: str
+    videoUrl: str
+    durationSeconds: float | None
     createdAt: datetime
 
 
@@ -60,8 +63,6 @@ class MovieCreateRequest(BaseModel):
 
 class MovieTimelineUpdateRequest(BaseModel):
     slots: list[MovieSlotPayload] = Field(default_factory=list, max_length=500)
-    transition_style: str | None = None
-    transition_hold_seconds: float | None = Field(default=None, ge=0, le=3)
 
 
 class MovieSlotResponse(BaseModel):
@@ -90,14 +91,11 @@ class MovieSummaryResponse(BaseModel):
     updatedAt: datetime
     slotCount: int
     latestVideo: VideoSummaryResponse | None
-    transitionStyle: str
-    transitionHoldSeconds: float
 
 
 class MovieDetailResponse(MovieSummaryResponse):
     clips: list[ClipResponse]
     slots: list[MovieSlotResponse]
-    transitionStyles: list[str]
     latestJob: "RenderJobResponse | None" = None
 
 
