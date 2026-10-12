@@ -38,6 +38,19 @@ def _current(db: Session, user_id: str) -> BrandSweep | None:
     return db.scalar(select(BrandSweep).where(BrandSweep.user_id == user_id))
 
 
+def _has_alpha(pix_fmt: str | None) -> bool:
+    """Only accept ffprobe pixel formats with an explicit alpha component.
+
+    A container or codec name alone cannot establish transparency (e.g. a
+    .mov may contain opaque H.264). Unknown formats fail closed.
+    """
+    if not pix_fmt:
+        return False
+    return pix_fmt.startswith(("yuva", "gbrap", "rgba", "bgra", "ayuv", "ya16")) or pix_fmt in {
+        "argb", "abgr", "ya8", "vuya",
+    }
+
+
 @router.get("", response_model=BrandSweepResponse | None)
 def get_brand_sweep(db: Session = Depends(get_db), user: User = Depends(get_current_user)):
     """The caller's own sweep, or null if they are using the bundled one."""
@@ -82,6 +95,10 @@ def upload_brand_sweep(
         raise HTTPException(
             status_code=400, detail="That file is not a readable video."
         )
+
+    if not _has_alpha(media.get("pix_fmt")):
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail="The sweep video must have an alpha channel.")
 
     existing = _current(db, user.id)
     if existing is not None:

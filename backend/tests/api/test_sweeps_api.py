@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from backend.app.models import BrandSweep
+from backend.app.storage import probe_media
 from backend.tests.conftest import requires_ffmpeg
 
 
@@ -17,10 +18,9 @@ pytestmark = requires_ffmpeg
 
 
 @pytest.fixture
-def video_bytes(make_media):
-    """A small real video. The upload decodes what it is given, so the bundled
-    90MB sweep would be a slow and pointless stand-in here."""
-    return make_media("sweep.mov", seconds=0.5).read_bytes()
+def alpha_video_bytes(make_alpha_sweep):
+    """A small real sweep with an alpha-bearing pixel format."""
+    return make_alpha_sweep("sweep.mov").read_bytes()
 
 
 def _upload(client, video_bytes, name="sweep.mov", content_type="video/quicktime"):
@@ -35,8 +35,8 @@ def test_no_sweep_reads_as_null(client):
     assert client.get("/api/v1/sweeps").json() is None
 
 
-def test_upload_then_read_back(client, video_bytes):
-    assert _upload(client, video_bytes).status_code == 200
+def test_upload_then_read_back(client, alpha_video_bytes):
+    assert _upload(client, alpha_video_bytes).status_code == 200
     body = client.get("/api/v1/sweeps").json()
     assert body["id"]
     assert body["originalName"] == "sweep.mov"
@@ -48,28 +48,66 @@ def test_the_sweep_is_scoped_to_the_caller(client, make_sweep, other_user):
     assert client.get("/api/v1/sweeps").json() is None
 
 
-def test_uploading_again_replaces_rather_than_accumulates(client, db_session, video_bytes):
-    _upload(client, video_bytes, name="first.mov")
-    _upload(client, video_bytes, name="second.mov")
+def test_uploading_again_replaces_rather_than_accumulates(client, db_session, alpha_video_bytes):
+    first = _upload(client, alpha_video_bytes, name="first.mov")
+    assert first.status_code == 200, first.text
+    second = _upload(client, alpha_video_bytes, name="second.mov")
+    assert second.status_code == 200, second.text
+    assert second.json()["id"] == first.json()["id"]
     assert db_session.query(BrandSweep).count() == 1
     assert client.get("/api/v1/sweeps").json()["originalName"] == "second.mov"
 
 
-def test_replacing_removes_the_previous_file(client, db_session, video_bytes):
-    _upload(client, video_bytes, name="first.mov")
+def test_replacing_removes_the_previous_file(client, db_session, alpha_video_bytes):
+    assert _upload(client, alpha_video_bytes, name="first.mov").status_code == 200
     first_path = Path(db_session.query(BrandSweep).one().storage_path)
     assert first_path.is_file()
 
     db_session.expire_all()
-    _upload(client, video_bytes, name="second.mov")
+    assert _upload(client, alpha_video_bytes, name="second.mov").status_code == 200
     second_path = Path(db_session.query(BrandSweep).one().storage_path)
 
     assert second_path.is_file()
     assert not first_path.is_file(), "the replaced sweep is still on disk"
 
 
-def test_an_unsupported_extension_is_rejected(client, db_session, isolated_storage, video_bytes):
-    response = _upload(client, video_bytes, name="sweep.gif", content_type="image/gif")
+def test_opaque_h264_is_rejected_without_creating_a_sweep(
+    client, db_session, isolated_storage, make_media
+):
+    path = make_media("opaque.mov", seconds=0.5)
+    media = probe_media(path, strict=True)
+    assert media["has_video"] and media["duration"] > 0
+    assert media["video_codec"] == "h264" and media["pix_fmt"] == "yuv420p"
+    opaque = path.read_bytes()
+    assert client.get("/api/v1/sweeps").json() is None
+
+    response = _upload(client, opaque, name="opaque.mov")
+    assert response.status_code == 400, response.text
+    assert "alpha channel" in response.json()["detail"]
+    assert client.get("/api/v1/sweeps").json() is None
+    assert db_session.query(BrandSweep).count() == 0
+    assert list((isolated_storage / "sweeps").iterdir()) == []
+
+
+def test_opaque_replacement_keeps_previous_alpha_sweep(
+    client, db_session, isolated_storage, alpha_video_bytes, make_media
+):
+    first = _upload(client, alpha_video_bytes, name="first.mov")
+    assert first.status_code == 200, first.text
+    original = first.json()
+    prior_path = Path(db_session.query(BrandSweep).one().storage_path)
+    opaque = make_media("opaque.mov", seconds=0.5).read_bytes()
+
+    rejected = _upload(client, opaque, name="replacement.mov")
+    assert rejected.status_code == 400, rejected.text
+    assert client.get("/api/v1/sweeps").json() == original
+    assert prior_path.is_file()
+    assert client.get(f"/api/v1/sweeps/{original['id']}/file").content == alpha_video_bytes
+    assert list((isolated_storage / "sweeps").iterdir()) == [prior_path]
+
+
+def test_an_unsupported_extension_is_rejected(client, db_session, isolated_storage, alpha_video_bytes):
+    response = _upload(client, alpha_video_bytes, name="sweep.gif", content_type="image/gif")
     assert response.status_code == 400
     assert "Unsupported sweep format" in response.json()["detail"]
     assert db_session.query(BrandSweep).count() == 0
@@ -86,11 +124,11 @@ def test_a_file_that_is_not_video_is_rejected(client, db_session, isolated_stora
     assert list((isolated_storage / "sweeps").iterdir()) == []
 
 
-def test_an_oversize_sweep_is_rejected(client, db_session, monkeypatch, video_bytes):
+def test_an_oversize_sweep_is_rejected(client, db_session, monkeypatch, alpha_video_bytes):
     from backend.app.routers import sweeps as sweeps_router
 
     monkeypatch.setattr(sweeps_router.settings, "max_brand_sweep_bytes", 100)
-    assert _upload(client, video_bytes).status_code == 400
+    assert _upload(client, alpha_video_bytes).status_code == 400
     assert db_session.query(BrandSweep).count() == 0
 
 
