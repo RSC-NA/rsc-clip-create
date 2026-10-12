@@ -6,6 +6,7 @@ IntegrityError on MySQL -- and would pass silently on SQLite without the
 PRAGMA the conftest now sets.
 """
 
+from datetime import datetime
 from pathlib import Path
 
 from backend.app.models import (
@@ -157,6 +158,73 @@ def test_deleting_a_video_clears_the_movies_pointer(
     assert db_session.query(Video).count() == 0
     assert db_session.get(Movie, movie.id).latest_video_id is None
     assert not rendered.exists()
+
+
+def test_deleting_latest_video_exposes_older_render_until_last_video_is_deleted(
+    client, db_session, make_movie, make_clip, tmp_path
+):
+    movie, _, older_file = _rendered_movie(db_session, make_movie, make_clip, tmp_path)
+    older_id = movie.latest_video_id
+    newer_file = tmp_path / "newer.mp4"
+    newer_file.write_bytes(b"newer render")
+    newer = Video(movie_id=movie.id, storage_path=str(newer_file), status="succeeded")
+    db_session.add(newer)
+    db_session.flush()
+    movie.latest_video_id = newer.id
+    db_session.commit()
+
+    assert client.delete(f"/api/v1/videos/{newer.id}").status_code == 204
+    assert not newer_file.exists()
+
+    detail = client.get(f"/api/v1/movies/{movie.id}")
+    assert detail.status_code == 200
+    assert detail.json()["latestVideo"]["id"] == older_id
+    listed = client.get("/api/v1/movies")
+    assert listed.status_code == 200
+    latest = next(m for m in listed.json() if m["id"] == movie.id)["latestVideo"]
+    assert latest["id"] == older_id
+    assert latest["downloadUrl"].endswith(f"/api/v1/videos/{older_id}/file")
+    streamed = client.get(f"/api/v1/videos/{older_id}/file")
+    assert streamed.status_code == 200
+    assert streamed.content == b"rendered bytes"
+    assert older_file.exists()
+
+    assert client.delete(f"/api/v1/videos/{older_id}").status_code == 204
+    detail = client.get(f"/api/v1/movies/{movie.id}")
+    assert detail.status_code == 200
+    assert detail.json()["latestVideo"] is None
+    assert not older_file.exists()
+
+
+def test_deleting_latest_video_selects_most_recent_render_from_same_movie(
+    client, db_session, make_movie, make_clip, tmp_path
+):
+    movie, _, oldest_file = _rendered_movie(db_session, make_movie, make_clip, tmp_path)
+    oldest_id = movie.latest_video_id
+    db_session.get(Video, oldest_id).created_at = datetime(2023, 1, 1)
+    middle_file = tmp_path / "middle.mp4"
+    middle_file.write_bytes(b"middle")
+    newest_file = tmp_path / "newest.mp4"
+    newest_file.write_bytes(b"newest")
+    middle = Video(
+        movie_id=movie.id, storage_path=str(middle_file), status="succeeded",
+        created_at=datetime(2024, 1, 1),
+    )
+    newest = Video(
+        movie_id=movie.id, storage_path=str(newest_file), status="succeeded",
+        created_at=datetime(2025, 1, 1),
+    )
+    db_session.add_all([middle, newest])
+    db_session.flush()
+    movie.latest_video_id = newest.id
+    db_session.commit()
+
+    assert client.delete(f"/api/v1/videos/{newest.id}").status_code == 204
+    detail = client.get(f"/api/v1/movies/{movie.id}")
+    assert detail.status_code == 200
+    assert detail.json()["latestVideo"]["id"] == middle.id
+    assert oldest_file.exists()
+    assert middle_file.exists()
 
 
 def test_another_users_video_cannot_be_deleted(

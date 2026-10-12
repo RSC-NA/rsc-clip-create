@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from backend.app.config import get_settings
@@ -64,9 +65,16 @@ def delete_video(
     if movie is None or movie.user_id != user.id:
         raise HTTPException(status_code=404, detail="Video not found.")
 
-    # Movie.latest_video_id references videos; clear it before the delete.
+    # Move the foreign-key pointer before deleting the selected video. Only
+    # consider renders from this movie, and break timestamp ties consistently.
     if movie.latest_video_id == video.id:
-        movie.latest_video_id = None
+        replacement = db.scalar(
+            select(Video.id)
+            .where(Video.movie_id == movie.id, Video.id != video.id)
+            .order_by(Video.created_at.desc(), Video.id.desc())
+            .limit(1)
+        )
+        movie.latest_video_id = replacement
         db.flush()
 
     path = video.storage_path
