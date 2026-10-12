@@ -1,5 +1,7 @@
 """HTTP-level tests for the movies router."""
 
+import pytest
+
 from backend.app.models import Movie, MovieSlot, RenderJob, RenderJobAttempt, RenderJobClipResult
 
 
@@ -160,6 +162,100 @@ def test_render_needs_the_minimum_clip_count(client, make_movie, make_clip):
     response = client.post(f"/api/v1/movies/{movie.id}/render")
     assert response.status_code == 400
     assert "at least" in response.json()["detail"]
+
+
+def test_queued_render_blocks_removing_and_reordering_slots(client, make_movie, make_clip):
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    movie = make_movie(clips=clips)
+    url = f"/api/v1/movies/{movie.id}"
+    queued = client.post(f"{url}/render")
+    assert queued.status_code == 200, queued.text
+    original = client.get(url).json()
+    assert [slot["clipId"] for slot in original["slots"]] == [clip.id for clip in clips]
+    assert original["status"] == original["latestJob"]["status"] == "queued"
+
+    for slots in (
+        original["slots"][:1],
+        list(reversed(original["slots"])),
+    ):
+        payload = {
+            "slots": [
+                {"id": slot["id"], "sort_index": index,
+                 "clip_id": slot["clipId"], "overlay_text": slot["overlayText"]}
+                for index, slot in enumerate(slots)
+            ]
+        }
+        response = client.put(f"{url}/timeline", json=payload)
+        assert response.status_code == 409, response.text
+        detail = client.get(url).json()
+        assert detail["status"] == "queued"
+        assert detail["latestJob"]["id"] == queued.json()["id"]
+        assert detail["latestJob"]["status"] == "queued"
+        assert detail["slots"] == original["slots"]
+
+
+def test_running_render_blocks_slot_removal_and_preserves_diagnostics(
+    client, db_session, make_movie, make_clip
+):
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    movie = make_movie(clips=clips)
+    url = f"/api/v1/movies/{movie.id}"
+    queued = client.post(f"{url}/render")
+    assert queued.status_code == 200, queued.text
+    original = client.get(url).json()["slots"]
+    job = db_session.query(RenderJob).filter_by(movie_id=movie.id).one()
+    result = RenderJobClipResult(
+        render_job_attempt_id=job.latest_attempt_id,
+        movie_slot_id=original[1]["id"],
+        clip_id=clips[1].id,
+        clip_order_index=1,
+        submitted_clip_path=clips[1].storage_path,
+        status="pending",
+    )
+    db_session.add(result)
+    job.status = "running"
+    movie.status = "running"
+    db_session.commit()
+
+    response = client.put(f"{url}/timeline", json=_slot_payload([clips[0]]))
+
+    assert response.status_code == 409, response.text
+    detail = client.get(url).json()
+    assert detail["status"] == detail["latestJob"]["status"] == "running"
+    assert detail["slots"] == original
+    assert detail["latestJob"]["attempts"][0]["clipResults"][0]["id"] == result.id
+    db_session.refresh(result)
+    assert result.movie_slot_id == original[1]["id"]
+
+
+@pytest.mark.parametrize("terminal_status", ["succeeded", "failed"])
+def test_timeline_save_allowed_after_render_finishes(
+    client, db_session, make_movie, make_clip, terminal_status
+):
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    movie = make_movie(clips=clips)
+    url = f"/api/v1/movies/{movie.id}"
+    assert client.post(f"{url}/render").status_code == 200
+    original = client.get(url).json()["slots"]
+    job = db_session.query(RenderJob).filter_by(movie_id=movie.id).one()
+    job.status = terminal_status
+    movie.status = "ready" if terminal_status == "succeeded" else "failed"
+    db_session.commit()
+
+    saved = client.put(
+        f"{url}/timeline",
+        json={"slots": [{"id": original[0]["id"], "sort_index": 0,
+                         "clip_id": clips[0].id, "overlay_text": "changed"}]},
+    )
+
+    assert saved.status_code == 200, saved.text
+    detail = client.get(url).json()
+    assert detail["status"] == "editing"
+    assert detail["latestJob"]["status"] == terminal_status
+    assert len(detail["slots"]) == 1
+    assert detail["slots"][0]["id"] == original[0]["id"]
+    assert detail["slots"][0]["clipId"] == clips[0].id
+    assert detail["slots"][0]["overlayText"] == "changed"
 
 
 def test_queueing_twice_is_409(client, make_movie, make_clip):

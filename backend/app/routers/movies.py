@@ -229,6 +229,18 @@ def update_timeline(
     if movie is None:
         raise HTTPException(status_code=404, detail="Movie not found.")
 
+    active = db.scalar(
+        select(RenderJob).where(
+            RenderJob.movie_id == movie.id,
+            RenderJob.status.in_(["queued", "running"]),
+        )
+    )
+    if active is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="A render is already queued or running for this movie.",
+        )
+
     movie.status = "editing"
     existing_by_id = {slot.id: slot for slot in movie.slots}
     retained_ids: set[str] = set()
