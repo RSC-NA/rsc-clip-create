@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import update
+from sqlalchemy.orm import sessionmaker
 
+from backend.app import worker
 from backend.app.models import Movie, RenderJob, User
 from backend.app.services.render_worker import requeue_stale_jobs
 
@@ -73,6 +75,54 @@ def test_a_job_that_finishes_mid_sweep_is_not_knocked_back(db_session):
     assert requeue_stale_jobs(db_session) == 0
     db_session.refresh(job)
     assert job.status == "succeeded"
+
+
+def test_worker_recovers_a_job_that_becomes_stale_after_startup(db_session, engine, monkeypatch):
+    """An idle worker must sweep again after a heartbeat expires, without restarting."""
+    now = datetime.now(timezone.utc)
+    abandoned = _job(db_session, "running", now)
+    active = _job(db_session, "running", now)
+    abandoned_id, active_id = abandoned.id, active.id
+
+    monkeypatch.setattr(worker, "SessionLocal", sessionmaker(bind=engine, future=True))
+    monkeypatch.setattr(worker, "configure_logging", lambda: None)
+    monkeypatch.setattr(worker, "_install_signal_handlers", lambda: None)
+    # Keep the queue consumer idle so the recovered row remains observable;
+    # startup recovery and subsequent sweeps still use real database sessions.
+    monkeypatch.setattr(worker, "process_next_job", lambda db: None)
+    monkeypatch.setattr(worker, "_shutdown", False)
+    monkeypatch.setattr(worker, "STALE_SWEEP_INTERVAL_SECONDS", 4)
+    elapsed = 0
+    sleeps = 0
+    monkeypatch.setattr(worker.time, "monotonic", lambda: elapsed)
+
+    def idle_sleep(seconds):
+        nonlocal elapsed, sleeps
+        elapsed += seconds
+        sleeps += 1
+        if sleeps == 1:
+            # Startup already saw both jobs as fresh. One heartbeat becomes
+            # stale only after the worker has entered its idle loop.
+            db_session.execute(
+                update(RenderJob)
+                .where(RenderJob.id == abandoned_id)
+                .values(heartbeat_at=now - timedelta(hours=48))
+            )
+            db_session.commit()
+        else:
+            db_session.expire_all()
+            if db_session.get(RenderJob, abandoned_id).status == "queued" or sleeps >= 8:
+                worker._shutdown = True
+
+    monkeypatch.setattr(worker.time, "sleep", idle_sleep)
+    worker.main()
+
+    db_session.expire_all()
+    recovered = db_session.get(RenderJob, abandoned_id)
+    assert sleeps > 1
+    assert recovered.status == "queued"
+    assert recovered.final_status_reason == "Requeued after the previous worker stopped responding."
+    assert db_session.get(RenderJob, active_id).status == "running"
 
 
 def test_heartbeat_is_refreshed_during_a_render(db_session):
