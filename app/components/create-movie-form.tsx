@@ -64,6 +64,10 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
       setError(null);
 
       try {
+        // Count Unicode code points like the API, not UTF-16 code units.
+        if (Array.from(title).length > 255) {
+          throw new Error("Movie title must be 255 characters or fewer.");
+        }
         const selected = Array.from(files ?? []);
         validate(selected);
 

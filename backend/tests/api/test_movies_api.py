@@ -46,9 +46,13 @@ def test_empty_title_is_422_not_500(client):
     assert response.status_code == 422
 
 
-def test_overlong_title_is_rejected(client):
-    response = client.post("/api/v1/movies", json={"title": "x" * 300})
-    assert response.status_code == 422
+def test_movie_title_length_boundary(client):
+    accepted = client.post("/api/v1/movies", json={"title": "x" * 255})
+    assert accepted.status_code == 200
+    assert accepted.json()["title"] == "x" * 255
+
+    rejected = client.post("/api/v1/movies", json={"title": "x" * 256})
+    assert rejected.status_code == 422
 
 
 def test_timeline_round_trip_preserves_order(client, make_movie, make_clip):
