@@ -1,6 +1,6 @@
 import pytest
 
-from backend.app.models import Video
+from backend.app.models import RenderJob, RenderJobAttempt, RenderJobClipResult, Video
 
 ADMIN_ROUTES = [
     "/api/v1/admin/dashboard",
@@ -35,8 +35,6 @@ def test_errors_endpoint_survives_a_deleted_clip(
     admin_client, db_session, make_movie, make_clip
 ):
     """clipName must fall back rather than dereferencing a null relationship."""
-    from backend.app.models import RenderJob, RenderJobAttempt, RenderJobClipResult
-
     movie = make_movie(clips=[make_clip()])
     job = RenderJob(movie_id=movie.id, status="failed")
     db_session.add(job)
@@ -55,3 +53,44 @@ def test_errors_endpoint_survives_a_deleted_clip(
     body = admin_client.get("/api/v1/admin/errors").json()
     assert len(body) == 1
     assert body[0]["clipResults"][0]["clipName"] == "Deleted clip"
+
+
+@pytest.mark.parametrize(
+    ("statuses", "failed_count"),
+    [
+        (["pending", "pending"], 0),
+        (["rejected", "pending"], 1),
+    ],
+)
+def test_errors_count_only_rejected_clips(
+    admin_client, db_session, make_movie, make_clip, statuses, failed_count
+):
+    clips = [make_clip(name=f"Team-Player-{index}.mp4") for index in range(2)]
+    movie = make_movie(clips=clips)
+    job = RenderJob(movie_id=movie.id, status="failed")
+    db_session.add(job)
+    db_session.flush()
+    attempt = RenderJobAttempt(render_job_id=job.id, attempt_number=1, status="failed")
+    db_session.add(attempt)
+    db_session.flush()
+    for index, (clip, status) in enumerate(zip(clips, statuses)):
+        db_session.add(
+            RenderJobClipResult(
+                render_job_attempt_id=attempt.id,
+                clip_id=clip.id,
+                clip_order_index=index,
+                submitted_clip_path=clip.storage_path,
+                status=status,
+            )
+        )
+    db_session.commit()
+
+    response = admin_client.get("/api/v1/admin/errors")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["status"] == "failed"
+    assert body[0]["failedClipCount"] == failed_count
+    assert {
+        result["clipOrderIndex"]: result["status"] for result in body[0]["clipResults"]
+    } == dict(enumerate(statuses))
