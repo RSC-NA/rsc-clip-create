@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { File } from "node:buffer";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -25,7 +26,8 @@ const config = {
 // Render the entire compiled client component, then drive its JSX input and
 // button callbacks rather than extracting submit() and supplying synthetic state.
 // The hook adapter rerenders when an input changes; fetch is the network boundary.
-function mountCreateMovieForm() {
+function mountCreateMovieForm(overrides = {}) {
+  const formConfig = { ...config, ...overrides };
   const states = [];
   const posts = [];
   let hookIndex = 0;
@@ -53,8 +55,14 @@ function mountCreateMovieForm() {
       throw new Error(`Unexpected import: ${specifier}`);
     },
     FormData,
-    fetch: async (url, options) => {
-      if (options.method === "POST") posts.push({ url, body: options.body });
+    // Node requires absolute URLs while the browser resolves relative Request URLs.
+    Request: class extends Request {
+      constructor(url, options) { super(new URL(url, "http://localhost"), options); }
+    },
+    fetch: async (input, options) => {
+      const url = typeof input === "string" ? input : new URL(input.url).pathname;
+      const method = options?.method ?? input.method;
+      if (method === "POST") posts.push({ url, body: options?.body ?? input });
       return {
         ok: true,
         json: async () => url.endsWith("/clips") ? [{ id: "clip-1" }] : { id: "movie-1" },
@@ -64,7 +72,7 @@ function mountCreateMovieForm() {
 
   function render() {
     hookIndex = 0;
-    tree = exports.CreateMovieForm({ config });
+    tree = exports.CreateMovieForm({ config: formConfig });
   }
   function find(predicate, node = tree) {
     if (Array.isArray(node)) {
@@ -89,8 +97,11 @@ function mountCreateMovieForm() {
     selectClip() {
       const clip = new Blob(["clip"], { type: "video/mp4" });
       clip.name = "Falcons-Ace-Gold.mp4";
+      this.selectClips([clip]);
+    },
+    selectClips(clips) {
       find((node) => node.type === "input" && node.props.id === "movie-files")
-        .props.onChange({ target: { files: [clip] } });
+        .props.onChange({ target: { files: clips } });
       render();
     },
     async clickCreate() {
@@ -105,6 +116,40 @@ function mountCreateMovieForm() {
     },
   };
 }
+
+test("Create Movie preflights the encoded multipart upload and posts the selected files when it fits", async () => {
+  const clips = ["Falcons-Ace-Gold.mp4", "Eagles-Bee-Silver.mp4"].map(
+    (name, index) => new File([new Uint8Array(4096).fill(index + 1)], name, { type: "video/mp4" }),
+  );
+  const upload = new FormData();
+  clips.forEach((clip) => upload.append("files", clip));
+  const encodedBytes = (await new Request("http://localhost/clips", {
+    method: "POST", body: upload,
+  }).blob()).size;
+  assert.ok(8192 < 8320 && encodedBytes > 8320, "file bytes fit, but the multipart request does not");
+
+  const oversized = mountCreateMovieForm({ maxClipSizeBytes: 4096, maxUploadBytes: 8320 });
+  oversized.enterTitle("Spring launch");
+  oversized.selectClips(clips);
+  await oversized.clickCreate();
+  assert.match(oversized.error(), /per upload/);
+  assert.equal(oversized.posts.length, 0, "reject before uploading clips or creating a movie");
+
+  const fitting = mountCreateMovieForm({ maxClipSizeBytes: 4096, maxUploadBytes: 10000 });
+  fitting.enterTitle("Spring launch");
+  fitting.selectClips(clips);
+  await fitting.clickCreate();
+  assert.equal(fitting.error(), null);
+  assert.deepEqual(fitting.posts.map(({ url }) => url), ["/api/backend/clips", "/api/backend/movies"]);
+  const posted = await fitting.posts[0].body.clone().formData();
+  const postedFiles = posted.getAll("files");
+  assert.equal(postedFiles.length, 2);
+  for (const [index, file] of postedFiles.entries()) {
+    assert.equal(file.name, clips[index].name);
+    assert.equal(file.type, clips[index].type);
+    assert.deepEqual(new Uint8Array(await file.arrayBuffer()), new Uint8Array(await clips[index].arrayBuffer()));
+  }
+});
 
 test("Create Movie rejects a 256-character title before either POST, but accepts 255", async () => {
   for (const title of ["x".repeat(255), "x".repeat(256), "🎬".repeat(255)]) {
