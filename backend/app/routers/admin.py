@@ -153,8 +153,8 @@ def admin_errors(
                 failureStage=attempt.failure_stage,
                 errorCategory=attempt.error_category,
                 errorSummary=attempt.error_summary,
-                failedClipCount=len(
-                    [result for result in attempt.clip_results if result.status != "accepted"]
+                failedClipCount=sum(
+                    result.status == "rejected" for result in attempt.clip_results
                 ),
                 createdAt=attempt.created_at,
                 clipResults=clip_results,
