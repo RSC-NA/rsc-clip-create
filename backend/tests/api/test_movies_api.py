@@ -79,6 +79,29 @@ def test_same_clip_in_two_slots_is_rejected(client, make_movie, make_clip):
     assert "multiple timeline positions" in response.json()["detail"]
 
 
+def test_duplicate_timeline_sort_indices_are_rejected_without_saving(client, make_movie, make_clip):
+    movie = make_movie()
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    url = f"/api/v1/movies/{movie.id}"
+    duplicate = _slot_payload(clips)
+    duplicate["slots"][1]["sort_index"] = 0
+
+    rejected = client.put(f"{url}/timeline", json=duplicate)
+    assert rejected.status_code == 400, rejected.text
+    assert "sort indices" in rejected.json()["detail"]
+    detail = client.get(url)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slotCount"] == 0
+    assert detail.json()["slots"] == []
+
+    accepted = client.put(f"{url}/timeline", json=_slot_payload(clips))
+    assert accepted.status_code == 200, accepted.text
+    detail = client.get(url)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slotCount"] == 2
+    assert [slot["sortIndex"] for slot in detail.json()["slots"]] == [0, 1]
+
+
 def test_duplicate_existing_slot_id_is_rejected_without_changing_timeline(
     client, make_movie, make_clip
 ):
