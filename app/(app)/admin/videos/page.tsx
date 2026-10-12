@@ -10,7 +10,7 @@ export default async function AdminVideosPage() {
   return (
     <main className="page-shell page-grid">
       <PageHeader
-        description="Inspect every generated output, its owner, and the latest render attempt state that produced or blocked it."
+        description="Inspect every generated output, its owner, and the source attempt that produced it."
         eyebrow="Administrator"
         title="Video Inventory"
       />
@@ -25,7 +25,7 @@ export default async function AdminVideosPage() {
               <th scope="col">Movie</th>
               <th scope="col">Owner</th>
               <th scope="col">Status</th>
-              <th scope="col">Latest Attempt</th>
+              <th scope="col">Source Attempt</th>
               <th scope="col">Location</th>
               <th scope="col">Created</th>
             </tr>

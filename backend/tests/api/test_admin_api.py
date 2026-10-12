@@ -58,6 +58,9 @@ def test_videos_report_their_source_attempt_not_a_later_retry(
     response = admin_client.get("/api/v1/admin/videos")
     assert response.status_code == 200
     rows = {row["id"]: row for row in response.json()}
+    assert job.latest_attempt_id == queued.id
+    assert video.source_attempt_id == succeeded.id
+    assert queued.status == "queued"
     assert rows[video.id]["latestAttemptStatus"] == "succeeded"
 
 
