@@ -105,7 +105,7 @@ def probe_media(path: Path, *, strict: bool = False) -> dict:
                 "-v", "error",
                 "-show_entries",
                 "format=duration:stream=codec_type,codec_name,width,height,"
-                "r_frame_rate,nb_frames,sample_rate",
+                "r_frame_rate,nb_frames,sample_rate,pix_fmt",
                 "-of", "json",
                 str(path),
             ],
@@ -128,6 +128,7 @@ def probe_media(path: Path, *, strict: bool = False) -> dict:
             "frame_rate": video.get("r_frame_rate"),
             "nb_frames": int(video["nb_frames"]) if str(video.get("nb_frames", "")).isdigit() else None,
             "video_codec": video.get("codec_name"),
+            "pix_fmt": video.get("pix_fmt"),
             "audio_codec": audio.get("codec_name"),
             "sample_rate": audio.get("sample_rate"),
         }

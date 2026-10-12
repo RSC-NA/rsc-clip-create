@@ -284,6 +284,32 @@ def make_media(tmp_path):
 
 
 @pytest.fixture
+def make_alpha_sweep(tmp_path):
+    """Encode real alpha-bearing .mov sweeps for the HTTP upload tests."""
+    from PIL import Image
+
+    def _make(name="alpha.mov"):
+        frames = tmp_path / f"{Path(name).stem}-frames"
+        frames.mkdir()
+        for index, alpha in enumerate((0, 128, 255, 128, 0)):
+            Image.new("RGBA", (64, 48), (255, 0, 0, alpha)).save(
+                frames / f"frame-{index:02d}.png"
+            )
+        destination = tmp_path / name
+        subprocess.run(
+            [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                "-framerate", "10", "-i", str(frames / "frame-%02d.png"),
+                "-c:v", "qtrle", "-pix_fmt", "argb", str(destination),
+            ],
+            check=True, capture_output=True,
+        )
+        return destination
+
+    return _make
+
+
+@pytest.fixture
 def sample_clips():
     """User-supplied footage from backend/tests/fixtures/samples/."""
     if not SAMPLES_DIR.is_dir():
