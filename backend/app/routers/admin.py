@@ -81,14 +81,9 @@ def admin_videos(
     for video in videos:
         movie = db.get(Movie, video.movie_id)
         owner = db.get(User, movie.user_id) if movie else None
-        latest_job = db.scalar(
-            select(RenderJob)
-            .where(RenderJob.movie_id == movie.id)
-            .order_by(RenderJob.created_at.desc())
-        ) if movie else None
-        latest_attempt = (
-            db.get(RenderJobAttempt, latest_job.latest_attempt_id)
-            if latest_job and latest_job.latest_attempt_id
+        source_attempt = (
+            db.get(RenderJobAttempt, video.source_attempt_id)
+            if video.source_attempt_id
             else None
         )
         responses.append(
@@ -98,7 +93,7 @@ def admin_videos(
                 ownerName=owner.display_name if owner else "Unknown Owner",
                 status=video.status,
                 storagePath=video.storage_path,
-                latestAttemptStatus=latest_attempt.status if latest_attempt else None,
+                latestAttemptStatus=source_attempt.status if source_attempt else None,
                 createdAt=video.created_at,
             )
         )
