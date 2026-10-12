@@ -250,6 +250,10 @@ def update_timeline(
                 raise HTTPException(status_code=400, detail="A timeline slot ID cannot appear more than once.")
             seen_existing_ids.add(slot_id)
 
+    sort_indices = [slot.sort_index for slot in payload.slots]
+    if len(sort_indices) != len(set(sort_indices)):
+        raise HTTPException(status_code=400, detail="Timeline slots must have distinct sort indices.")
+
     movie.status = "editing"
     retained_ids: set[str] = set()
     assigned_clip_ids: set[str] = set()
