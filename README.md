@@ -208,6 +208,13 @@ compose file:
 
 ```bash
 docker compose up -d --build
+```
+
+Before running the smoke check, install `ffmpeg` and `ffprobe` on the host running
+`./scripts/docker-smoke.sh`. The FFmpeg tools installed inside the containers do not
+provide these commands on the host.
+
+```bash
 ./scripts/docker-smoke.sh     # uploads, renders and downloads, to prove it works
 ```
 
