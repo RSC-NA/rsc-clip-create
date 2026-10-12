@@ -77,6 +77,36 @@ def test_render_error_marks_job_and_clips_failed(db_session):
     assert "ffmpeg exploded" in attempt.error_summary
 
 
+def test_unverified_final_render_does_not_create_succeeded_video(db_session, monkeypatch):
+    """The worker only records success if the actual renderer verifies its output."""
+    from backend.app.services import renderer as renderer_module
+    from backend.app.services.renderer import Segment
+
+    movie, _ = _movie_with_clips(db_session)
+    monkeypatch.setattr(renderer_module, "load_sweep", lambda options: None)
+    monkeypatch.setattr(
+        renderer_module, "normalize_clip",
+        lambda spec, destination, workdir, options: Segment(destination, 60),
+    )
+
+    def join(segments, boundaries, output, options, workdir, **kwargs):
+        output.write_bytes(b"incomplete movie")
+
+    monkeypatch.setattr(renderer_module, "join_segments", join)
+    monkeypatch.setattr(
+        renderer_module, "probe_media",
+        lambda path: {"duration": 4.0, "has_video": True, "has_audio": True, "nb_frames": 119},
+    )
+
+    processed = process_next_job(db_session, renderer=renderer_module.render_movie)
+
+    assert processed.status == "failed"
+    assert processed.attempts[0].failure_stage == "verify"
+    assert processed.attempts[0].status == "failed"
+    assert db_session.get(Movie, movie.id).status == "failed"
+    assert db_session.query(Video).count() == 0
+
+
 def test_clips_missing_metadata_are_rejected_not_rendered(db_session):
     """Metadata validation used to be gated on the old Veo test seam, so it was
     skipped exactly when the seam was in use."""

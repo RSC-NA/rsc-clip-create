@@ -650,10 +650,16 @@ def render_movie(
     if not output.exists() or output.stat().st_size == 0:
         raise RenderError("FFmpeg did not produce an output file.", "verify")
     media = probe_media(output)
-    if media.get("duration") is None:
-        raise RenderError("The rendered output could not be verified.", "verify")
+    if media.get("duration") is None or not media.get("has_video") or not media.get("has_audio"):
+        raise RenderError("The rendered output is missing duration, video, or audio.", "verify")
+    actual_frames = media.get("nb_frames")
+    if actual_frames is None or actual_frames != expected:
+        raise RenderError(
+            f"The rendered output has {actual_frames} video frames; expected {expected}.",
+            "verify",
+        )
 
-    media["frames"] = expected
+    media["frames"] = actual_frames
     media["expected_duration"] = expected / options.fps
     media["sweep"] = (
         {"source": sweep.path.name, "frames": sweep.frames, "cover": sweep.cover}
