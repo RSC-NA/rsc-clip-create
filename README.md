@@ -5,7 +5,7 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 ## What is in this repo
 
 - A Next.js App Router frontend at the repo root
-- A FastAPI backend in [`backend/`](/Users/monty/Projects/clip_create/backend)
+- A FastAPI backend in [`backend/`](backend/)
 - MySQL-oriented SQLAlchemy models for users, clips, movies, brand sweeps, render jobs,
   render attempts, clip-level diagnostics, and videos
 - Admin-only pages for users, videos, and render errors
