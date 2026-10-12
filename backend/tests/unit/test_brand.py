@@ -1,7 +1,6 @@
 from PIL import Image, ImageDraw
 
-from backend.app.filename_parser import ParsedClipName
-from backend.app.filename_parser import LABEL_SEPARATOR
+from backend.app.filename_parser import LABEL_SEPARATOR, ParsedClipName, parse_clip_filename
 from backend.app.services.brand import (
     BUNDLED_FONT,
     BUNDLED_SWEEP,
@@ -79,6 +78,38 @@ def test_the_stroke_adds_contrast_without_a_plate(tmp_path):
         return sum(1 for value in Image.open(path).split()[-1].getdata() if value > 0)
 
     assert covered(stroked) > covered(bare)
+
+
+def test_long_valid_label_renders_its_final_tier_glyph_inside_the_frame(tmp_path):
+    prefix = "W" * 60
+    # Both names pass the upload parser and differ only in the last tier glyph.
+    long_name = parse_clip_filename(f"{prefix}-{prefix}-{prefix}.mp4")
+    changed_name = parse_clip_filename(f"{prefix}-{prefix}-{'W' * 59}I.mp4")
+    long_path, changed_path = tmp_path / "long.png", tmp_path / "changed.png"
+    create_label_image(long_name, long_path)
+    create_label_image(changed_name, changed_path)
+
+    with Image.open(long_path) as rendered, Image.open(changed_path) as changed:
+        alpha = rendered.getchannel("A")
+        other_alpha = changed.getchannel("A")
+        assert rendered.size == changed.size == (1920, 1080)
+        assert alpha.getbbox()[2] <= 1912, "the label touches the right frame edge"
+        assert other_alpha.getbbox()[2] <= 1912
+        assert alpha.tobytes() != other_alpha.tobytes(), (
+            "changing the final tier glyph had no effect on the rendered PNG"
+        )
+
+
+def test_short_label_keeps_its_single_line_and_left_anchor(tmp_path):
+    out = tmp_path / "short.png"
+    create_label_image(NAME, out)
+    with Image.open(out) as rendered:
+        left, top, _, bottom = rendered.getchannel("A").getbbox()
+        _, text_top, _, text_bottom = ImageDraw.Draw(rendered).textbbox(
+            (0, 0), NAME.label, font=resolve_font(56), stroke_width=3
+        )
+        assert 35 <= left <= 45
+        assert bottom - top <= text_bottom - text_top
 
 
 def test_label_is_full_frame(tmp_path):
