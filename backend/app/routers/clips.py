@@ -114,6 +114,12 @@ def upload_clips(
     if len(files) > settings.max_clip_count:
         raise HTTPException(status_code=400, detail=f"Upload no more than {settings.max_clip_count} clips.")
 
+    movie = None
+    if movie_id is not None:
+        movie = db.scalar(select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id))
+        if movie is None:
+            raise HTTPException(status_code=404, detail="Movie not found.")
+
     parsed_files = []
     storage_names = []
     for file in files:
@@ -184,12 +190,10 @@ def upload_clips(
             db.flush()
             saved_clips.append(clip)
 
-        if movie_id:
-            movie = db.scalar(select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id))
-            if movie:
-                next_index = max((slot.sort_index for slot in movie.slots), default=-1) + 1
-                for offset, clip in enumerate(saved_clips):
-                    db.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=next_index + offset, overlay_text=""))
+        if movie is not None:
+            next_index = max((slot.sort_index for slot in movie.slots), default=-1) + 1
+            for offset, clip in enumerate(saved_clips):
+                db.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=next_index + offset, overlay_text=""))
 
         db.commit()
     except Exception:

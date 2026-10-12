@@ -1,10 +1,11 @@
 """HTTP-level tests for clip upload and listing."""
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
-from backend.app.models import Clip
+from backend.app.models import Clip, MovieSlot
 from backend.tests.conftest import requires_ffmpeg
 
 
@@ -254,6 +255,67 @@ def test_uploading_with_a_movie_id_attaches_slots(client, make_media, make_movie
 
     assert response.status_code == 200
     assert db_session.query(MovieSlot).filter_by(movie_id=movie.id).count() == 1
+
+
+@pytest.mark.parametrize("target", ["missing", "other_user"])
+def test_uploading_to_an_inaccessible_movie_does_not_save_clips(
+    client, db_session, isolated_storage, monkeypatch, make_movie, other_user, target
+):
+    from backend.app.routers import clips as clips_router
+
+    movie_id = str(uuid4()) if target == "missing" else make_movie(owner=other_user).id
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = client.post(
+        f"/api/v1/clips?movie_id={movie_id}",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"video bytes", "video/mp4"))],
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Movie not found."
+    assert db_session.query(Clip).count() == 0
+    assert db_session.query(MovieSlot).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_uploading_to_owned_movie_saves_clip_and_slot(
+    client, db_session, isolated_storage, monkeypatch, make_movie
+):
+    from backend.app.routers import clips as clips_router
+
+    movie = make_movie()
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = client.post(
+        f"/api/v1/clips?movie_id={movie.id}",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"video bytes", "video/mp4"))],
+    )
+
+    assert response.status_code == 200, response.text
+    assert db_session.query(Clip).count() == 1
+    slot = db_session.query(MovieSlot).one()
+    assert slot.movie_id == movie.id
+    assert slot.clip_id == response.json()[0]["id"]
+    assert len(list((isolated_storage / "clips").iterdir())) == 1
+
+
+def test_uploading_without_movie_id_saves_clip_only(
+    client, db_session, isolated_storage, monkeypatch
+):
+    from backend.app.routers import clips as clips_router
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = _upload(client, "Falcons-Ace-Gold.mp4", b"video bytes")
+
+    assert response.status_code == 200, response.text
+    assert db_session.query(Clip).count() == 1
+    assert db_session.query(MovieSlot).count() == 0
+    assert client.get("/api/v1/clips").json()[0]["id"] == response.json()[0]["id"]
+    assert len(list((isolated_storage / "clips").iterdir())) == 1
 
 
 def test_an_over_budget_request_is_rejected_before_anything_is_written(
