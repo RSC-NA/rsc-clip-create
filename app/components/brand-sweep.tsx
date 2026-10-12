@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { readApiError } from "@/app/lib/api-error";
 import { browserApiPath } from "@/app/lib/browser-api";
 import type { BrandSweep as BrandSweepFile } from "@/app/lib/types";
@@ -14,6 +14,7 @@ export function BrandSweep({
   supportedFormats: string[];
 }) {
   const router = useRouter();
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
@@ -35,6 +36,7 @@ export function BrandSweep({
         });
         if (!response.ok) throw await readApiError(response);
 
+        if (fileInputRef.current) fileInputRef.current.value = "";
         setFile(null);
         router.refresh();
       } catch (caught) {
@@ -134,6 +136,7 @@ export function BrandSweep({
             accept={accept}
             id="sweep-file"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            ref={fileInputRef}
             type="file"
           />
         </div>
