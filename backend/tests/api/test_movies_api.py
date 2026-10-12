@@ -3,6 +3,7 @@
 import pytest
 
 from backend.app.models import Movie, MovieSlot, RenderJob, RenderJobAttempt, RenderJobClipResult
+from backend.app.services.render_worker import process_next_job
 
 
 def _slot_payload(clips):
@@ -294,6 +295,47 @@ def test_render_requires_clip_metadata(client, db_session, make_movie, make_clip
     response = client.post(f"/api/v1/movies/{movie.id}/render")
     assert response.status_code == 400
     assert "valid filename metadata" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("invalid_index", [None, 1])
+def test_successful_render_counts_rejected_selected_inputs(
+    client, db_session, make_movie, make_clip, invalid_index
+):
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(3)]
+    movie = make_movie(clips=clips)
+    queued = client.post(f"/api/v1/movies/{movie.id}/render")
+    assert queued.status_code == 200, queued.text
+
+    # Queue-time validation passed; metadata can become invalid before pickup.
+    if invalid_index is not None:
+        clips[invalid_index].team = None
+        db_session.commit()
+
+    rendered = []
+
+    def fake_render(inputs, output, options=None, on_progress=None):
+        rendered.extend(inputs)
+        return {"duration": 1.0}
+
+    process_next_job(db_session, renderer=fake_render)
+    response = client.get(f"/api/v1/jobs/{queued.json()['id']}")
+    assert response.status_code == 200, response.text
+    job = response.json()
+    accepted = [clip for index, clip in enumerate(clips) if index != invalid_index]
+    assert job["status"] == "succeeded"
+    assert [input.name.player for input in rendered] == [clip.player for clip in accepted]
+    assert job["acceptedClipCount"] == len(accepted)
+    assert job["failedClipCount"] == (1 if invalid_index is not None else 0)
+    assert job["hasClipLevelFailures"] is (invalid_index is not None)
+
+    results = job["attempts"][0]["clipResults"]
+    assert len(results) == 3
+    by_clip_id = {result["clipId"]: result for result in results}
+    assert all(by_clip_id[clip.id]["status"] == "accepted" for clip in accepted)
+    if invalid_index is not None:
+        rejected = by_clip_id[clips[invalid_index].id]
+        assert rejected["status"] == "rejected"
+        assert rejected["reasonCode"] == "invalid_metadata"
 
 
 def test_adding_a_brand_new_slot_succeeds(client, make_movie, make_clip):

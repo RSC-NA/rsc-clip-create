@@ -74,6 +74,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
     attempt.submitted_at = datetime.now(timezone.utc)
     slots = sorted(movie.slots, key=lambda slot: slot.sort_index)
     selected = []
+    rejected_count = 0
     for slot in slots:
         if not slot.clip_id:
             continue
@@ -89,6 +90,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
                 reason_code="missing_clip", reason_summary="The selected clip no longer exists.",
             )
             db.add(result)
+            rejected_count += 1
             continue
         if not clip.team or not clip.player or not clip.tier:
             result = RenderJobClipResult(
@@ -98,6 +100,7 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
                 reason_code="invalid_metadata", reason_summary="Clip filename metadata is incomplete.",
             )
             db.add(result)
+            rejected_count += 1
             continue
         result = RenderJobClipResult(
             render_job_attempt_id=attempt.id, movie_slot_id=slot.id, clip_id=clip.id,
@@ -180,7 +183,8 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         job.final_status_reason = "Clips rendered and concatenated successfully."
         movie.status = "succeeded"
         job.accepted_clip_count = len(selected)
-        job.failed_clip_count = 0
+        job.failed_clip_count = rejected_count
+        job.has_clip_level_failures = rejected_count > 0
         video = Video(
             movie_id=movie.id, source_attempt_id=attempt.id,
             storage_path=str(destination), status="succeeded",
