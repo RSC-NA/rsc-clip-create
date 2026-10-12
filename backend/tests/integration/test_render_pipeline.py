@@ -5,10 +5,13 @@ than against itself. Skipped when ffmpeg is unavailable so the default suite
 stays fast and portable.
 """
 
+import subprocess
+
 import pytest
+from PIL import Image
 
 from backend.app.filename_parser import ParsedClipName
-from backend.app.services.brand import BUNDLED_SWEEP
+from backend.app.services.brand import BUNDLED_SWEEP, COVER_THRESHOLD
 from backend.app.services.renderer import (
     ClipSpec,
     RenderError,
@@ -55,6 +58,38 @@ def test_the_bundled_sweep_measures_as_expected():
     # Fully opaque from frame 10 to 32, so the cut belongs on 21.
     assert sweep.cover == 21
     assert sweep.lead_frames + sweep.tail_frames == sweep.frames
+
+
+def test_disjoint_alpha_sweep_places_the_cut_under_an_opaque_frame(make_media, tmp_path):
+    """Decode actual alpha, then place that same sweep over a rendered hard cut."""
+    alpha = [255, 0, 0, 0, 255]
+    # Match the output aspect ratio: padding a square sweep with transparent
+    # pixels lowers its mean alpha below COVER_THRESHOLD, even on opaque frames.
+    for index, value in enumerate(alpha):
+        Image.new("RGBA", (320, 240), (255, 0, 0, value)).save(
+            tmp_path / f"sweep-{index:02d}.png"
+        )
+    path = tmp_path / "disjoint.mov"
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-framerate", str(FPS), "-i", str(tmp_path / "sweep-%02d.png"),
+            "-c:v", "qtrle", "-pix_fmt", "argb", str(path),
+        ],
+        check=True, capture_output=True,
+    )
+    options = _options(sweep_path=path, width=320, height=240)
+    sweep = load_sweep(options)
+    assert sweep is not None
+    assert sweep.frames == len(alpha)
+    assert alpha[sweep.cover] >= COVER_THRESHOLD
+
+    clips = _clips(make_media, 2, seconds=1)
+    media = render_movie(_specs(clips), tmp_path / "out.mp4", options)
+    assert not media["transitions"][0].get("hard_cut")
+    cut = media["transitions"][0]["start"] + media["sweep"]["cover"]
+    assert cut == FPS  # The sweep's opaque cover is aligned with the clip join.
+    assert alpha[cut - media["transitions"][0]["start"]] >= COVER_THRESHOLD
 
 
 def test_a_sweep_that_is_not_video_degrades_instead_of_raising(tmp_path):
