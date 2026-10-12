@@ -241,8 +241,16 @@ def update_timeline(
             detail="A render is already queued or running for this movie.",
         )
 
-    movie.status = "editing"
     existing_by_id = {slot.id: slot for slot in movie.slots}
+    seen_existing_ids: set[str] = set()
+    for slot_payload in payload.slots:
+        slot_id = slot_payload.id
+        if slot_id is not None and slot_id in existing_by_id:
+            if slot_id in seen_existing_ids:
+                raise HTTPException(status_code=400, detail="A timeline slot ID cannot appear more than once.")
+            seen_existing_ids.add(slot_id)
+
+    movie.status = "editing"
     retained_ids: set[str] = set()
     assigned_clip_ids: set[str] = set()
 

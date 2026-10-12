@@ -79,6 +79,54 @@ def test_same_clip_in_two_slots_is_rejected(client, make_movie, make_clip):
     assert "multiple timeline positions" in response.json()["detail"]
 
 
+def test_duplicate_existing_slot_id_is_rejected_without_changing_timeline(
+    client, make_movie, make_clip
+):
+    original_clip = make_clip("Falcons-A-Gold.mp4")
+    second_clip = make_clip("Falcons-B-Gold.mp4")
+    movie = make_movie(clips=[original_clip])
+    url = f"/api/v1/movies/{movie.id}"
+    original = client.get(url).json()
+    assert original["slotCount"] == 1
+    slot_id = original["slots"][0]["id"]
+
+    duplicate = client.put(
+        f"{url}/timeline",
+        json={"slots": [
+            {"id": slot_id, "sort_index": 0, "clip_id": original_clip.id, "overlay_text": ""},
+            {"id": slot_id, "sort_index": 1, "clip_id": second_clip.id, "overlay_text": ""},
+        ]},
+    )
+    assert duplicate.status_code == 400, duplicate.text
+
+    unchanged = client.get(url).json()
+    assert unchanged["slotCount"] == 1
+    assert unchanged["slots"] == original["slots"]
+    assert unchanged["slots"][0]["id"] == slot_id
+    assert unchanged["slots"][0]["clipId"] == original_clip.id
+    assert unchanged["status"] == original["status"]
+
+    added = client.put(
+        f"{url}/timeline",
+        json={"slots": [
+            {"id": slot_id, "sort_index": 0, "clip_id": original_clip.id, "overlay_text": ""},
+            {"id": None, "sort_index": 1, "clip_id": second_clip.id, "overlay_text": ""},
+        ]},
+    )
+    assert added.status_code == 200, added.text
+    new_slot_id = next(slot["id"] for slot in added.json()["slots"] if slot["id"] != slot_id)
+    distinct = client.put(
+        f"{url}/timeline",
+        json={"slots": [
+            {"id": slot_id, "sort_index": 0, "clip_id": original_clip.id, "overlay_text": ""},
+            {"id": new_slot_id, "sort_index": 1, "clip_id": second_clip.id, "overlay_text": ""},
+        ]},
+    )
+    assert distinct.status_code == 200, distinct.text
+    assert distinct.json()["slotCount"] == 2
+    assert {slot["id"] for slot in distinct.json()["slots"]} == {slot_id, new_slot_id}
+
+
 def test_another_users_clip_cannot_be_placed(client, make_movie, make_clip, other_user):
     movie = make_movie()
     foreign = make_clip("Ravens-Bo-Silver.mp4", owner=other_user)
