@@ -47,16 +47,6 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
         );
       }
     }
-
-    // The whole request is buffered in memory by the Next proxy before it ever
-    // reaches the API, so the total matters as much as any single file.
-    const total = selected.reduce((sum, file) => sum + file.size, 0);
-    if (total > config.maxUploadBytes) {
-      throw new Error(
-        `Those ${selected.length} clips total ${mb(total)} MB; the limit is ` +
-          `${mb(config.maxUploadBytes)} MB per upload. Add them in smaller batches.`,
-      );
-    }
   }
 
   function submit() {
@@ -77,11 +67,22 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
         // join the reusable clip library.
         const formData = new FormData();
         selected.forEach((file) => formData.append("files", file));
-
-        const uploadResponse = await fetch(browserApiPath("/clips"), {
+        // Measure the encoded request, not just the files: multipart boundaries
+        // and part headers count toward the proxy and API's request limit.
+        // Clone so measuring the body does not consume the request we send.
+        const uploadRequest = new Request(browserApiPath("/clips"), {
           method: "POST",
           body: formData,
         });
+        const uploadBytes = (await uploadRequest.clone().blob()).size;
+        if (uploadBytes > config.maxUploadBytes) {
+          throw new Error(
+            `Those ${selected.length} clips require ${mb(uploadBytes)} MB; the limit is ` +
+              `${mb(config.maxUploadBytes)} MB per upload. Add them in smaller batches.`,
+          );
+        }
+
+        const uploadResponse = await fetch(uploadRequest);
         if (!uploadResponse.ok) {
           throw await readApiError(uploadResponse);
         }
