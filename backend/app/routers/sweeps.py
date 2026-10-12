@@ -107,6 +107,13 @@ def upload_brand_sweep(
         destination.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail="The sweep video must have an alpha channel.")
 
+    if duration > settings.max_clip_duration_seconds:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"The sweep video exceeds the {settings.max_clip_duration_seconds:g} second limit.",
+        )
+
     try:
         existing = _current(db, user.id)
         if existing is not None:
