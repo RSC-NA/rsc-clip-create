@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from fastapi import APIRouter, Depends
@@ -107,8 +107,12 @@ def admin_errors(
     attempts = db.scalars(
         select(RenderJobAttempt)
         .where(
-            RenderJobAttempt.status.in_(
-                ["failed", "partial_failure", "provider_rejected"]
+            or_(
+                RenderJobAttempt.status.in_(
+                    ["failed", "partial_failure", "provider_rejected"]
+                ),
+                (RenderJobAttempt.status == "succeeded")
+                & RenderJobAttempt.clip_results.any(RenderJobClipResult.status == "rejected"),
             )
         )
         .options(
