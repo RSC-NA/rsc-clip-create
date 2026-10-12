@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from backend.app.config import get_settings
@@ -70,6 +70,12 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         db.commit()
         return job
 
+    # A crashed worker may have committed its pending diagnostics in a progress
+    # heartbeat. A stale requeue reuses this attempt, so replace those rows
+    # before recording diagnostics for the new claim (including rejections).
+    db.execute(
+        delete(RenderJobClipResult).where(RenderJobClipResult.render_job_attempt_id == attempt.id)
+    )
     attempt.status = "running"
     attempt.submitted_at = datetime.now(timezone.utc)
     slots = sorted(movie.slots, key=lambda slot: slot.sort_index)

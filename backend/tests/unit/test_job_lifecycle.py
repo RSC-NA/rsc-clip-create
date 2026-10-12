@@ -1,7 +1,8 @@
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import update
+import pytest
+from sqlalchemy import select, update
 from sqlalchemy.orm import sessionmaker
 
 from backend.app import worker
@@ -166,3 +167,86 @@ def test_heartbeat_is_refreshed_during_a_render(db_session):
     process_next_job(db_session, renderer=renderer)
 
     assert beats and beats[0] is not None
+
+    # The ordinary first claim must also leave just its final diagnostics.
+    from backend.app.models import RenderJobClipResult
+
+    results = db_session.scalars(
+        select(RenderJobClipResult).where(RenderJobClipResult.render_job_attempt_id == attempt.id)
+    ).all()
+    assert len(results) == 2
+    assert all(result.status == "accepted" for result in results)
+
+
+def test_requeued_render_after_committed_heartbeat_has_only_accepted_clip_results(db_session, engine):
+    """A dead worker's committed diagnostics must not be duplicated on recovery."""
+    from backend.app.models import Clip, MovieSlot, RenderJobAttempt, RenderJobClipResult
+    from backend.app.services.render_worker import process_next_job
+
+    user = User(discord_user_id=str(uuid.uuid4()), display_name="U")
+    db_session.add(user)
+    db_session.flush()
+    movie = Movie(user_id=user.id, title="M")
+    db_session.add(movie)
+    db_session.flush()
+    for index in range(2):
+        clip = Clip(
+            user_id=user.id, original_name=f"T-p{index}-G.mp4",
+            storage_path=f"/clip{index}.mp4", team="T", player=f"p{index}",
+            tier="G", extension="mp4",
+        )
+        db_session.add(clip)
+        db_session.flush()
+        db_session.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=index))
+    job = RenderJob(movie_id=movie.id, status="queued")
+    db_session.add(job)
+    db_session.flush()
+    attempt = RenderJobAttempt(render_job_id=job.id, attempt_number=1)
+    db_session.add(attempt)
+    db_session.flush()
+    job.latest_attempt_id = attempt.id
+    job_id, attempt_id = job.id, attempt.id
+    db_session.commit()
+
+    def interrupted_render(clips, output, options=None, on_progress=None):
+        on_progress()  # Commits the pending clip results before the worker dies.
+        raise KeyboardInterrupt("worker stopped after heartbeat")
+
+    with pytest.raises(KeyboardInterrupt):
+        process_next_job(db_session, renderer=interrupted_render)
+    db_session.close()
+
+    # A separate worker session sees the previous heartbeat's committed rows.
+    with sessionmaker(bind=engine, future=True)() as recovery:
+        pending = recovery.scalars(
+            select(RenderJobClipResult).where(RenderJobClipResult.render_job_attempt_id == attempt_id)
+        ).all()
+        assert len(pending) == 2
+        assert all(result.status == "pending" for result in pending)
+        recovery.execute(
+            update(RenderJob).where(RenderJob.id == job_id).values(
+                heartbeat_at=datetime.now(timezone.utc) - timedelta(hours=48)
+            )
+        )
+        recovery.commit()
+
+        assert requeue_stale_jobs(recovery) == 1
+        assert recovery.get(RenderJob, job_id).status == "queued"
+        process_next_job(
+            recovery,
+            renderer=lambda clips, output, options=None, on_progress=None: {"duration": 1.0},
+        )
+
+        recovery.expire_all()
+        recovered = recovery.get(RenderJob, job_id)
+        results = recovery.scalars(
+            select(RenderJobClipResult).where(
+                RenderJobClipResult.render_job_attempt_id == recovered.latest_attempt_id
+            )
+        ).all()
+        assert recovered.latest_attempt_id == attempt_id
+        assert recovered.status == "succeeded"
+        assert recovered.accepted_clip_count == 2
+        assert len(results) == 2
+        assert all(result.status == "accepted" for result in results)
+        assert not any(result.status == "pending" for result in results)
