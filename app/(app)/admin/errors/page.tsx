@@ -17,7 +17,7 @@ export default async function AdminErrorsPage() {
 
       {errors.length === 0 ? (
         <div className="empty-state">
-          No render failures recorded. Nothing to diagnose.
+          No render issues recorded. Nothing to diagnose.
         </div>
       ) : null}
 
@@ -29,10 +29,16 @@ export default async function AdminErrorsPage() {
                 <span className="mono-label">
                   {error.movieTitle} / Attempt {error.attemptNumber}
                 </span>
-                <strong>{error.errorSummary ?? "Render attempt failed."}</strong>
+                <strong>
+                  {error.errorSummary ?? (error.status === "succeeded"
+                    ? "Render succeeded with rejected clips."
+                    : "Render attempt failed.")}
+                </strong>
                 <p className="text-soft">
-                  Owner: {error.ownerName} • Stage: {error.failureStage ?? "unknown"} •
-                  Category: {error.errorCategory ?? "unknown"}
+                  Owner: {error.ownerName}
+                  {error.status !== "succeeded" ? (
+                    <> • Stage: {error.failureStage ?? "unknown"} • Category: {error.errorCategory ?? "unknown"}</>
+                  ) : null}
                 </p>
               </div>
               <StatusBadge value={error.status} />

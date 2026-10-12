@@ -151,3 +151,77 @@ def test_errors_count_only_rejected_clips(
     assert {
         result["clipOrderIndex"]: result["status"] for result in body[0]["clipResults"]
     } == dict(enumerate(statuses))
+
+
+@pytest.mark.parametrize("include_other_rows", [False, True])
+def test_errors_include_only_successful_attempts_with_rejected_clips(
+    admin_client, db_session, make_movie, make_clip, include_other_rows
+):
+    clips = [make_clip(name=f"Team-Player-{index}.mp4") for index in range(3)]
+    movie = make_movie(clips=clips)
+    job = RenderJob(movie_id=movie.id, status="succeeded", has_clip_level_failures=True)
+    db_session.add(job)
+    db_session.flush()
+    attempt = RenderJobAttempt(render_job_id=job.id, attempt_number=1, status="succeeded")
+    db_session.add(attempt)
+    db_session.flush()
+    for index, clip in enumerate(clips):
+        db_session.add(
+            RenderJobClipResult(
+                render_job_attempt_id=attempt.id,
+                clip_id=clip.id,
+                clip_order_index=index,
+                submitted_clip_path=clip.storage_path,
+                status="rejected" if index == 2 else "accepted",
+                reason_summary="Clip could not be decoded" if index == 2 else None,
+                reason_code="decode_error" if index == 2 else None,
+            )
+        )
+
+    if include_other_rows:
+        clean_job = RenderJob(movie_id=movie.id, status="succeeded")
+        db_session.add(clean_job)
+        db_session.flush()
+        clean_attempt = RenderJobAttempt(
+            render_job_id=clean_job.id, attempt_number=1, status="succeeded"
+        )
+        db_session.add(clean_attempt)
+        db_session.flush()
+        db_session.add(
+            RenderJobClipResult(
+                render_job_attempt_id=clean_attempt.id,
+                clip_id=clips[0].id,
+                clip_order_index=0,
+                submitted_clip_path=clips[0].storage_path,
+                status="accepted",
+            )
+        )
+        for status in ("failed", "partial_failure", "provider_rejected"):
+            failure_job = RenderJob(movie_id=movie.id, status=status)
+            db_session.add(failure_job)
+            db_session.flush()
+            db_session.add(RenderJobAttempt(
+                render_job_id=failure_job.id, attempt_number=1, status=status
+            ))
+    db_session.commit()
+
+    response = admin_client.get("/api/v1/admin/errors")
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == (4 if include_other_rows else 1)
+    assert {row["status"] for row in body} == (
+        {"succeeded", "failed", "partial_failure", "provider_rejected"}
+        if include_other_rows else {"succeeded"}
+    )
+    succeeded = next(row for row in body if row["status"] == "succeeded")
+    assert succeeded["jobId"] == job.id
+    assert succeeded["errorSummary"] is None
+    assert succeeded["failedClipCount"] == 1
+    results = {result["clipOrderIndex"]: result for result in succeeded["clipResults"]}
+    assert len(results) == 3
+    assert [results[index]["status"] for index in range(3)] == [
+        "accepted", "accepted", "rejected"
+    ]
+    assert results[2]["reasonSummary"] == "Clip could not be decoded"
+    assert results[2]["reasonCode"] == "decode_error"
+    assert results[2]["clipName"] == clips[2].original_name
