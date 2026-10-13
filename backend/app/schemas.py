@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class SessionResponse(BaseModel):
@@ -59,6 +59,13 @@ class MovieSlotPayload(BaseModel):
 
 class MovieCreateRequest(BaseModel):
     title: str = Field(min_length=1, max_length=255)
+
+    @field_validator("title")
+    @classmethod
+    def _title_not_blank(cls, value: str) -> str:
+        if value.strip() == "":
+            raise ValueError("title must not be blank")
+        return value
 
 
 class MovieTimelineUpdateRequest(BaseModel):
