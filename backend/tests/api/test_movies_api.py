@@ -49,6 +49,13 @@ def test_empty_title_is_422_not_500(client):
     assert response.status_code == 422
 
 
+def test_whitespace_only_title_is_422_and_creates_nothing(client):
+    for title in ("   ", "\t\n"):
+        assert client.post("/api/v1/movies", json={"title": title}).status_code == 422
+    assert client.get("/api/v1/movies").json() == []
+    assert client.post("/api/v1/movies", json={"title": "Season 1"}).status_code == 200
+
+
 def test_movie_title_length_boundary(client):
     accepted = client.post("/api/v1/movies", json={"title": "x" * 255})
     assert accepted.status_code == 200
