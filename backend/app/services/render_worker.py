@@ -213,7 +213,10 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             result.reason_code = "render_failed"
             result.reason_summary = str(exc)[:500]
             result.technical_detail = str(exc)
-        job.failed_clip_count = len(selected)
+        # Count every clip result marked rejected for this attempt, including
+        # inputs rejected before rendering, as the success path does.
+        job.failed_clip_count = len(selected) + rejected_count
+        job.has_clip_level_failures = job.failed_clip_count > 0
         _set_failure(job, attempt, str(exc), exc.stage)
         movie.status = "failed"
     except Exception as exc:

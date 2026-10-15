@@ -71,6 +71,7 @@ def test_render_error_marks_job_and_clips_failed(db_session):
 
     assert processed.status == "failed"
     assert processed.failed_clip_count == 2
+    assert processed.has_clip_level_failures is True
     assert db_session.query(Video).count() == 0
     attempt = processed.attempts[0]
     assert attempt.failure_stage == "overlay"
@@ -131,6 +132,48 @@ def test_clips_missing_metadata_are_rejected_not_rendered(db_session):
     # One valid clip left, which is below min_clip_count.
     assert processed.status == "failed"
     assert called is False
+
+
+def test_min_clip_count_failure_counts_rejected_inputs(db_session):
+    """The input RenderError raised for too few valid clips must count the
+    clip rejected for incomplete metadata as well as the remaining one."""
+    _movie_with_clips(db_session, 2)
+    clip = db_session.query(Clip).first()
+    clip.team = None
+    db_session.commit()
+
+    processed = process_next_job(db_session, renderer=lambda *a, **k: {"duration": 1.0})
+
+    assert processed.status == "failed"
+    assert processed.failed_clip_count == 2
+    assert processed.has_clip_level_failures is True
+
+
+def test_render_error_failed_clip_count_includes_rejected_inputs(db_session):
+    """A render that fails after an input clip was rejected must count that
+    rejected clip in failed_clip_count, as the success path already does."""
+    from backend.app.models import RenderJobClipResult
+
+    _movie_with_clips(db_session, 3)
+    clip = db_session.query(Clip).first()
+    clip.team = None
+    db_session.commit()
+
+    def failing(clips, output, options=None, on_progress=None):
+        raise RenderError("ffmpeg exploded", "overlay")
+
+    processed = process_next_job(db_session, renderer=failing)
+
+    results = (
+        db_session.query(RenderJobClipResult)
+        .filter(RenderJobClipResult.render_job_attempt_id == processed.latest_attempt_id)
+        .all()
+    )
+    assert processed.status == "failed"
+    assert len(results) == 3
+    assert all(r.status == "rejected" for r in results)
+    assert processed.failed_clip_count == 3
+    assert processed.has_clip_level_failures is True
 
 
 def test_no_queued_job_returns_none(db_session):
