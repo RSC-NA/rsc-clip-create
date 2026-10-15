@@ -91,6 +91,51 @@ def test_served_filename_preflight_rejects_whitespace_only_segments(client):
     assert json.loads(result.stdout) == [False, False, False, True, True]
 
 
+def test_served_pattern_enforces_segment_length_limit_like_the_parser(client):
+    """The upload parser rejects stripped segments over 80 characters; the
+    served preflight must reject them too, or the browser uploads a whole batch
+    only to get a 400."""
+    response = client.get("/api/v1/config")
+    assert response.status_code == 200
+    pattern = response.json()["filenamePattern"]
+    cases = {
+        "A" * 81 + "-Ace-Gold.mp4": False,
+        "Falcons-" + "P" * 81 + "-Gold.mp4": False,
+        "Falcons-Ace-" + "T" * 81 + ".mp4": False,
+        "A" * 80 + "-Ace-Gold.mp4": True,
+        " " + "A" * 80 + " -Ace-Gold.mp4": True,
+        "   -Ace-Gold.mp4": False,
+    }
+    names = list(cases)
+    expected = [cases[n] for n in names]
+
+    python_results = []
+    for name in names:
+        try:
+            parse_clip_filename(name)
+            python_results.append(True)
+        except ValueError:
+            python_results.append(False)
+    assert python_results == expected
+
+    if shutil.which("node") is not None:
+        script = (
+            "const re = new RegExp(process.argv[1]);"
+            "const names = JSON.parse(process.argv[2]);"
+            "console.log(JSON.stringify(names.map(name => re.test(name))));"
+        )
+        result = subprocess.run(
+            ["node", "-e", script, pattern, json.dumps(names)],
+            capture_output=True, text=True, check=True,
+        )
+        served_results = json.loads(result.stdout)
+    else:
+        compiled = re.compile(pattern)
+        served_results = [bool(compiled.search(n)) for n in names]
+
+    assert served_results == expected, dict(zip(names, zip(served_results, expected)))
+
+
 def test_direct_upload_preserves_whitespace_segment_error(client):
     filename = "   -Ace-Gold.mp4"
     response = client.post(
