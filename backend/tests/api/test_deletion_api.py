@@ -73,6 +73,30 @@ def test_deleting_a_rendered_movie_unwinds_the_whole_graph(
     assert db_session.query(Clip).count() == 1
 
 
+def test_deleting_a_movie_whose_job_points_at_its_latest_attempt(
+    client, db_session, make_movie, make_clip, tmp_path
+):
+    """POST /render always sets latest_attempt_id; the delete must unwind it."""
+    movie, clip, rendered = _rendered_movie(db_session, make_movie, make_clip, tmp_path)
+    job = db_session.query(RenderJob).filter_by(movie_id=movie.id).one()
+    job.latest_attempt_id = (
+        db_session.query(RenderJobAttempt).filter_by(render_job_id=job.id).one().id
+    )
+    db_session.commit()
+
+    assert client.delete(f"/api/v1/movies/{movie.id}").status_code == 204
+
+    db_session.expire_all()
+    assert db_session.query(Movie).count() == 0
+    assert db_session.query(MovieSlot).count() == 0
+    assert db_session.query(RenderJob).count() == 0
+    assert db_session.query(RenderJobAttempt).count() == 0
+    assert db_session.query(RenderJobClipResult).count() == 0
+    assert db_session.query(Video).count() == 0
+    assert not rendered.exists()
+    assert db_session.query(Clip).count() == 1
+
+
 def test_deleting_a_movie_mid_render_is_refused(client, db_session, make_movie, make_clip):
     movie = make_movie(clips=[make_clip()])
     db_session.add(RenderJob(movie_id=movie.id, status="running"))

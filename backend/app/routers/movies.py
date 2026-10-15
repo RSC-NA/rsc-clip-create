@@ -432,6 +432,11 @@ def delete_movie(
     paths = [video.storage_path for video in videos]
 
     movie.latest_video_id = None
+    # render_jobs.latest_attempt_id is a bare foreign key to the attempts the
+    # ORM cascade is about to delete; clear it first or the cascade fails.
+    jobs = db.scalars(select(RenderJob).where(RenderJob.movie_id == movie.id)).all()
+    for job in jobs:
+        job.latest_attempt_id = None
     db.flush()
     for video in videos:
         db.delete(video)
