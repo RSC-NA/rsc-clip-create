@@ -14,12 +14,21 @@ DEFAULT_EXTENSIONS = frozenset({"mp4", "mov", "webm", "m4v", "avi", "mkv"})
 _SEGMENT = r"[^-./\\]+"
 _EXTENSION = r"[A-Za-z0-9]+"
 
-# Served to the browser by GET /api/v1/config. Require a non-whitespace
-# character within each segment: the upload parser strips segments before
-# rejecting empty ones. The lookahead stops at a segment delimiter, while the
-# consuming class still permits leading/trailing whitespace. Keep this free of
-# Python named groups so it can be compiled by JavaScript's RegExp.
-_CLIENT_SEGMENT = rf"(?=[^-./\\]*[^\s\-./\\]){_SEGMENT}"
+MAX_SEGMENT_LENGTH = 80
+
+# Served to the browser by GET /api/v1/config. It mirrors parse_clip_filename,
+# which strips each segment and then rejects it when empty or longer than
+# MAX_SEGMENT_LENGTH. So a segment is optional surrounding whitespace around
+# a stripped core that starts and ends with a non-whitespace character and is
+# 1..MAX_SEGMENT_LENGTH characters long. Every class excludes the delimiters
+# and path separators. Keep this free of Python-only syntax (named groups) so
+# it can be compiled by JavaScript's RegExp.
+_CLIENT_EDGE = r"[^\s\-./\\]"
+_CLIENT_SEGMENT = (
+    rf"\s*{_CLIENT_EDGE}(?:[^-./\\]{{0,{MAX_SEGMENT_LENGTH - 2}}}{_CLIENT_EDGE})?\s*"
+    if MAX_SEGMENT_LENGTH >= 2
+    else rf"\s*{_CLIENT_EDGE}\s*"
+)
 CLIENT_FILENAME_PATTERN = rf"^{_CLIENT_SEGMENT}-{_CLIENT_SEGMENT}-{_CLIENT_SEGMENT}\.{_EXTENSION}$"
 
 FILENAME_RE = re.compile(
@@ -30,8 +39,6 @@ FILENAME_RE = re.compile(
 # U+00B7 MIDDLE DOT. Verified present in the bundled Anton face; a font
 # without it would render .notdef boxes between every word.
 LABEL_SEPARATOR = " · "
-
-MAX_SEGMENT_LENGTH = 80
 
 
 @dataclass(frozen=True)
