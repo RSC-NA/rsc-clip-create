@@ -507,5 +507,42 @@ def test_movie_detail_exposes_an_in_flight_job(client, make_movie, make_clip):
     assert detail["latestJob"]["status"] == "queued"
 
 
+def test_clip_results_are_returned_in_timeline_order(client, db_session, make_movie, make_clip):
+    """clipResults must follow clipOrderIndex, not the order rows were stored in."""
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(2)]
+    movie = make_movie(clips=clips)
+    url = f"/api/v1/movies/{movie.id}"
+    queued = client.post(f"{url}/render")
+    assert queued.status_code == 200, queued.text
+    slots = client.get(url).json()["slots"]
+    job = db_session.query(RenderJob).filter_by(movie_id=movie.id).one()
+
+    # Store index 1 before index 0.
+    for index in (1, 0):
+        db_session.add(
+            RenderJobClipResult(
+                render_job_attempt_id=job.latest_attempt_id,
+                movie_slot_id=slots[index]["id"],
+                clip_id=clips[index].id,
+                clip_order_index=index,
+                submitted_clip_path=clips[index].storage_path,
+                status="accepted",
+            )
+        )
+        db_session.commit()
+    db_session.expire_all()
+
+    job_response = client.get(f"/api/v1/jobs/{job.id}")
+    assert job_response.status_code == 200, job_response.text
+    job_results = job_response.json()["attempts"][0]["clipResults"]
+    assert [r["clipOrderIndex"] for r in job_results] == [0, 1]
+
+    db_session.expire_all()
+    detail = client.get(url)
+    assert detail.status_code == 200, detail.text
+    detail_results = detail.json()["latestJob"]["attempts"][0]["clipResults"]
+    assert [r["clipOrderIndex"] for r in detail_results] == [0, 1]
+
+
 def test_movie_detail_has_no_job_before_the_first_render(client, make_movie):
     assert client.get(f"/api/v1/movies/{make_movie().id}").json()["latestJob"] is None
