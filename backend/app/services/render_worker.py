@@ -221,6 +221,10 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         movie.status = "failed"
     except Exception as exc:
         logger.exception("unexpected worker error job_id=%s", job.id)
+        # Count inputs rejected before rendering. Selected clips stay "pending"
+        # and are not counted as failures.
+        job.failed_clip_count = rejected_count
+        job.has_clip_level_failures = rejected_count > 0
         _set_failure(job, attempt, str(exc), "worker")
         movie.status = "failed"
 

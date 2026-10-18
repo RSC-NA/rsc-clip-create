@@ -176,5 +176,65 @@ def test_render_error_failed_clip_count_includes_rejected_inputs(db_session):
     assert processed.has_clip_level_failures is True
 
 
+def test_unexpected_error_failed_clip_count_includes_rejected_inputs(db_session):
+    """An unexpected (non-RenderError) worker failure after an input clip was
+    rejected must still count that rejected clip, as the RenderError path does.
+    Clips left pending are not counted."""
+    from backend.app.models import RenderJobClipResult
+
+    _movie_with_clips(db_session, 3)
+    clip = db_session.query(Clip).first()
+    clip.team = None
+    db_session.commit()
+
+    def exploding(clips, output, options=None, on_progress=None):
+        raise ValueError("boom")
+
+    processed = process_next_job(db_session, renderer=exploding)
+
+    results = (
+        db_session.query(RenderJobClipResult)
+        .filter(RenderJobClipResult.render_job_attempt_id == processed.latest_attempt_id)
+        .all()
+    )
+    assert processed.status == "failed"
+    assert processed.attempts[0].failure_stage == "worker"
+    assert sorted(r.status for r in results) == ["pending", "pending", "rejected"]
+    assert processed.failed_clip_count == 1
+    assert processed.has_clip_level_failures is True
+
+
+def test_unexpected_error_does_not_count_pending_clips(db_session):
+    """With only valid clips, an unexpected worker error leaves them pending
+    and reports no clip-level failures."""
+    from backend.app.config import get_settings
+    from backend.app.models import RenderJobClipResult
+
+    # The renderer must actually be reached for this test to mean anything.
+    assert get_settings().min_clip_count <= 2
+
+    _movie_with_clips(db_session, 2)
+    called = False
+
+    def exploding(clips, output, options=None, on_progress=None):
+        nonlocal called
+        called = True
+        raise ValueError("boom")
+
+    processed = process_next_job(db_session, renderer=exploding)
+
+    results = (
+        db_session.query(RenderJobClipResult)
+        .filter(RenderJobClipResult.render_job_attempt_id == processed.latest_attempt_id)
+        .all()
+    )
+    assert called is True
+    assert processed.status == "failed"
+    assert processed.attempts[0].failure_stage == "worker"
+    assert [r.status for r in results] == ["pending", "pending"]
+    assert processed.failed_clip_count == 0
+    assert processed.has_clip_level_failures is False
+
+
 def test_no_queued_job_returns_none(db_session):
     assert process_next_job(db_session, renderer=lambda *a, **k: {}) is None

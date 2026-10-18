@@ -416,6 +416,32 @@ def test_successful_render_counts_rejected_selected_inputs(
         assert rejected["reasonCode"] == "invalid_metadata"
 
 
+def test_unexpected_worker_error_reports_rejected_inputs(
+    client, db_session, make_movie, make_clip
+):
+    clips = [make_clip(f"Falcons-P{i}-Gold.mp4") for i in range(3)]
+    movie = make_movie(clips=clips)
+    queued = client.post(f"/api/v1/movies/{movie.id}/render")
+    assert queued.status_code == 200, queued.text
+
+    # Metadata becomes invalid after queue-time validation.
+    clips[0].team = None
+    db_session.commit()
+
+    def exploding(inputs, output, options=None, on_progress=None):
+        raise ValueError("boom")
+
+    process_next_job(db_session, renderer=exploding)
+    response = client.get(f"/api/v1/jobs/{queued.json()['id']}")
+    assert response.status_code == 200, response.text
+    job = response.json()
+    assert job["status"] == "failed"
+    assert job["failedClipCount"] == 1
+    assert job["hasClipLevelFailures"] is True
+    statuses = sorted(r["status"] for r in job["attempts"][0]["clipResults"])
+    assert statuses == ["pending", "pending", "rejected"]
+
+
 def test_adding_a_brand_new_slot_succeeds(client, make_movie, make_clip):
     """Regression: update_timeline flushed a bare MovieSlot before assigning
     sort_index, which is NOT NULL -- so every slot added through the editor's
