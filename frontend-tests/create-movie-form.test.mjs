@@ -151,6 +151,32 @@ test("Create Movie preflights the encoded multipart upload and posts the selecte
   }
 });
 
+// The pattern GET /api/v1/config serves (backend/app/filename_parser.py
+// CLIENT_FILENAME_PATTERN with MAX_SEGMENT_LENGTH = 80).
+const segment = String.raw`\s*[^\s\-./\\](?:[^-./\\]{0,78}[^\s\-./\\])?\s*`;
+const servedFilenamePattern = String.raw`^${segment}-${segment}-${segment}\.[A-Za-z0-9]+$`;
+
+test("Create Movie preflight counts emoji in a clip name as one character each, like the API", async () => {
+  const eagle = "\u{1F985}";
+  for (const [team, accepted] of [[eagle.repeat(41), true], [eagle.repeat(80), true], [eagle.repeat(81), false]]) {
+    const form = mountCreateMovieForm({ filenamePattern: servedFilenamePattern });
+    const name = `${team}-Ace-Gold.mp4`;
+    form.enterTitle("Spring launch");
+    form.selectClips([new File([new Uint8Array(16)], name, { type: "video/mp4" })]);
+    await form.clickCreate();
+
+    if (accepted) {
+      assert.equal(form.error(), null);
+      assert.deepEqual(form.posts.map(({ url }) => url), ["/api/backend/clips", "/api/backend/movies"]);
+      const posted = await form.posts[0].body.clone().formData();
+      assert.equal(posted.get("files").name, name);
+    } else {
+      assert.equal(form.error(), `${name} must use team-player-tier.fileext.`);
+      assert.deepEqual(form.posts, []);
+    }
+  }
+});
+
 test("Create Movie rejects a 256-character title before either POST, but accepts 255", async () => {
   for (const title of ["x".repeat(255), "x".repeat(256), "🎬".repeat(255)]) {
     const form = mountCreateMovieForm();

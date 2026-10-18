@@ -20,8 +20,10 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
 
   // Server-supplied so the two copies of this rule cannot drift. The old
   // hardcoded regex accepted names the API rejected (a-b-c-d.mp4, a-b-c.exe),
-  // which failed only after the movie had already been created.
-  const filenamePattern = new RegExp(config.filenamePattern);
+  // which failed only after the movie had already been created. The "u" flag
+  // makes segment-length quantifiers count code points, like the parser's
+  // Python len(), rather than UTF-16 code units (an emoji would count as 2).
+  const filenamePattern = new RegExp(config.filenamePattern, "u");
 
   function validate(selected: File[]) {
     if (selected.length < config.minClipCount) {
