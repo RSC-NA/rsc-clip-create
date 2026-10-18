@@ -21,14 +21,14 @@ export function formatApiError(status: number, body: string): string {
   if (status === 401) {
     return "Your session has expired. Sign in again to continue.";
   }
-  if (status === 413) {
-    return "That upload is too large.";
-  }
+  const tooLarge = "That upload is too large.";
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
+    // A proxy's 413 page is HTML; fall back to the generic upload message.
+    if (status === 413) return tooLarge;
     // A proxy 502 returns an HTML document; never show markup to the user.
     return status >= 500
       ? "The server had a problem completing that request. Try again shortly."
@@ -38,6 +38,10 @@ export function formatApiError(status: number, body: string): string {
   const detail = (parsed as { detail?: unknown })?.detail;
 
   if (typeof detail === "string") return detail;
+
+  // The API's 413 carries the size and limit as a string detail; anything else
+  // gets the generic message rather than a raw or status-code fallback.
+  if (status === 413) return tooLarge;
 
   if (Array.isArray(detail)) {
     const messages = (detail as ValidationItem[])
