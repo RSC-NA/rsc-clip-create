@@ -120,7 +120,7 @@ def test_served_pattern_enforces_segment_length_limit_like_the_parser(client):
 
     if shutil.which("node") is not None:
         script = (
-            "const re = new RegExp(process.argv[1]);"
+            "const re = new RegExp(process.argv[1], \"u\");"
             "const names = JSON.parse(process.argv[2]);"
             "console.log(JSON.stringify(names.map(name => re.test(name))));"
         )
@@ -134,6 +134,67 @@ def test_served_pattern_enforces_segment_length_limit_like_the_parser(client):
         served_results = [bool(compiled.search(n)) for n in names]
 
     assert served_results == expected, dict(zip(names, zip(served_results, expected)))
+
+
+def _create_form_regexp_flags():
+    """Read the flags the Create Movie form passes when it compiles the served
+    pattern, so the preflight below runs exactly as the browser does."""
+    from pathlib import Path
+
+    form = Path(__file__).resolve().parents[3] / "app" / "components" / "create-movie-form.tsx"
+    source = form.read_text(encoding="utf-8")
+    match = re.search(
+        r"new RegExp\(\s*config\.filenamePattern\s*(?:,\s*[\"'`]([a-z]*)[\"'`]\s*)?\)", source
+    )
+    assert match, "create-movie-form.tsx no longer compiles config.filenamePattern"
+    return match.group(1) or ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node is required")
+def test_create_movie_preflight_counts_astral_segment_length_like_the_parser(client):
+    """The parser counts code points; the form's preflight must too, or a name
+    POST /clips accepts (41 emoji = 41 code points) is rejected in the browser
+    as 82 UTF-16 code units."""
+    response = client.get("/api/v1/config")
+    assert response.status_code == 200
+    pattern = response.json()["filenamePattern"]
+    flags = _create_form_regexp_flags()
+
+    eagle = "\U0001F985"
+    cases = {
+        eagle * 41 + "-Ace-Gold.mp4": True,
+        eagle * 80 + "-Ace-Gold.mp4": True,
+        eagle * 81 + "-Ace-Gold.mp4": False,
+        "A" * 81 + "-Ace-Gold.mp4": False,
+        "A" * 80 + "-Ace-Gold.mp4": True,
+        "   -Ace-Gold.mp4": False,
+    }
+    names = list(cases)
+    expected = [cases[n] for n in names]
+
+    python_results = []
+    for name in names:
+        try:
+            parse_clip_filename(name)
+            python_results.append(True)
+        except ValueError as exc:
+            if name == eagle * 81 + "-Ace-Gold.mp4":
+                assert "Team must be 80 characters or fewer." in str(exc)
+            python_results.append(False)
+    assert python_results == expected
+
+    script = (
+        "const re = new RegExp(process.argv[1], process.argv[2]);"
+        "const names = JSON.parse(process.argv[3]);"
+        "console.log(JSON.stringify(names.map(name => re.test(name))));"
+    )
+    result = subprocess.run(
+        ["node", "-e", script, pattern, flags, json.dumps(names)],
+        capture_output=True, text=True, check=True, encoding="utf-8",
+    )
+    preflight_results = json.loads(result.stdout)
+    labels = [f"{len(n)}cp:{n[:3]}..." for n in names]
+    assert preflight_results == expected, dict(zip(labels, zip(preflight_results, expected)))
 
 
 def test_direct_upload_preserves_whitespace_segment_error(client):
