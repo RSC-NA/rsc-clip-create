@@ -81,12 +81,17 @@ export function BrandSweep({
           <div className="row-between">
             {/* Muted and looping: a one-second transition being inspected,
                 not something anyone wants to sit through with sound. */}
+            {/* Replacing a sweep keeps its id, so version the src (and key the
+                element) by storagePath to make the preview load the new file. */}
             <video
               autoPlay
+              key={sweep.storagePath}
               loop
               muted
               playsInline
-              src={browserApiPath(`/sweeps/${sweep.id}/file`)}
+              src={browserApiPath(
+                `/sweeps/${sweep.id}/file?v=${encodeURIComponent(sweep.storagePath)}`,
+              )}
               style={{
                 background: "#0b1220",
                 borderRadius: 8,
