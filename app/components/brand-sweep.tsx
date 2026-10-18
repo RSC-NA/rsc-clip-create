@@ -9,9 +9,11 @@ import type { BrandSweep as BrandSweepFile } from "@/app/lib/types";
 export function BrandSweep({
   sweep,
   supportedFormats,
+  maxBrandSweepBytes,
 }: {
   sweep: BrandSweepFile | null;
   supportedFormats: string[];
+  maxBrandSweepBytes: number;
 }) {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -26,6 +28,13 @@ export function BrandSweep({
       setError(null);
       try {
         if (!file) throw new Error("Choose a video file.");
+        // Same wording the API uses, so an over-limit sweep is refused before
+        // it is streamed through the proxy in full.
+        if (file.size > maxBrandSweepBytes) {
+          throw new Error(
+            `${file.name} exceeds the ${maxBrandSweepBytes} byte limit.`,
+          );
+        }
 
         const body = new FormData();
         body.append("file", file);

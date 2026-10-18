@@ -13,7 +13,11 @@ export default async function SweepsPage() {
         title="Brand Sweep"
       />
 
-      <BrandSweep sweep={sweep} supportedFormats={config.supportedSweepFormats} />
+      <BrandSweep
+        maxBrandSweepBytes={config.maxBrandSweepBytes}
+        sweep={sweep}
+        supportedFormats={config.supportedSweepFormats}
+      />
     </main>
   );
 }

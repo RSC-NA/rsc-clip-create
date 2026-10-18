@@ -55,7 +55,7 @@ function find(predicate, node) {
 }
 
 function videoSrc(BrandSweep, sweep) {
-  const tree = BrandSweep({ sweep, supportedFormats: ["webm"] });
+  const tree = BrandSweep({ sweep, supportedFormats: ["webm"], maxBrandSweepBytes: 209715200 });
   const video = find((node) => node.type === "video", tree);
   assert.ok(video, "the current sweep must render a <video> preview");
   return video.props.src;
