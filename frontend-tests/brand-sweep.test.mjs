@@ -15,7 +15,7 @@ const compiled = ts.transpileModule(source, {
 
 // Drive the rendered input and button callbacks; model the browser's rule that
 // selecting the input's current file does not produce another change event.
-function mountBrandSweep(responses = [true, true]) {
+function mountBrandSweep(responses = [true, true], { maxBrandSweepBytes = 209715200 } = {}) {
   const states = [];
   const posts = [];
   let hookIndex = 0;
@@ -81,6 +81,7 @@ function mountBrandSweep(responses = [true, true]) {
     tree = exports.BrandSweep({
       sweep: { id: "sweep-1", originalName: "previous.webm", durationSeconds: null },
       supportedFormats: ["webm"],
+      maxBrandSweepBytes,
     });
     inputProps = find((node) => node.type === "input" && node.props.id === "sweep-file").props;
     if (typeof inputProps.ref === "function") inputProps.ref(input);
@@ -91,6 +92,7 @@ function mountBrandSweep(responses = [true, true]) {
     input,
     posts,
     button() { return find((node) => node.type === "button" && node.props.children === "Replace Sweep"); },
+    alert() { return find((node) => node.props?.role === "alert"); },
     select(file) {
       const nextValue = `C:\\fakepath\\${file.name}`;
       if (input.value === nextValue) return;
@@ -143,4 +145,31 @@ test("failed upload keeps the file selected for retry", async () => {
   assert.equal(sweep.posts.length, 2);
   assert.equal(sweep.posts[1].body.get("file").name, file.name);
   assert.equal(sweep.input.value, "");
+});
+
+test("a sweep over maxBrandSweepBytes is refused without a request, in the API's wording", async () => {
+  const sweep = mountBrandSweep([true], { maxBrandSweepBytes: 10 });
+  const file = new File(["x".repeat(11)], "transition.webm", { type: "video/webm" });
+  assert.equal(file.size, 11);
+  sweep.select(file);
+  await sweep.clickReplace();
+
+  assert.equal(sweep.posts.length, 0, "no fetch for an over-limit sweep");
+  const alert = sweep.alert();
+  assert.ok(alert, "the error must render in a role=alert element");
+  assert.equal(alert.props.children, "transition.webm exceeds the 10 byte limit.");
+  assert.notEqual(sweep.input.value, "", "the selection is kept so another file can be chosen");
+  assert.equal(sweep.button().props.disabled, false);
+});
+
+test("a sweep exactly at maxBrandSweepBytes still uploads", async () => {
+  const sweep = mountBrandSweep([true], { maxBrandSweepBytes: 10 });
+  const file = new File(["x".repeat(10)], "transition.webm", { type: "video/webm" });
+  assert.equal(file.size, 10);
+  sweep.select(file);
+  await sweep.clickReplace();
+
+  assert.deepEqual(sweep.posts.map(({ url, method }) => [url, method]), [["/api/v1/sweeps", "POST"]]);
+  assert.equal(sweep.posts[0].body.get("file").name, file.name);
+  assert.equal(sweep.alert(), null);
 });
