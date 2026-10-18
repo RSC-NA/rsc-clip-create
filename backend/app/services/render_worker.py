@@ -32,6 +32,21 @@ def _set_failure(job: RenderJob, attempt: RenderJobAttempt, message: str, stage:
     job.final_status_reason = message[:500]
 
 
+def _discard_output(movie_id: str, attempt_id: str) -> None:
+    """Best-effort removal of this attempt's rendered MP4.
+
+    Called when the render outcome cannot be recorded as a success, so storage
+    never holds a finished file that no Video row references. Never raises.
+    """
+    try:
+        output_path(movie_id, attempt_id).unlink(missing_ok=True)
+    except Exception:
+        logger.warning(
+            "could not remove unrecorded render output movie_id=%s attempt_id=%s",
+            movie_id, attempt_id, exc_info=True,
+        )
+
+
 def process_next_job(db: Session, renderer=None) -> RenderJob | None:
     """Claim and process the oldest queued render.
 
@@ -117,6 +132,8 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         selected.append((slot, clip, result))
 
     started = datetime.now(timezone.utc)
+    # Plain values, so cleanup never depends on ORM state after a failed flush.
+    output_movie_id, output_attempt_id = movie.id, attempt.id
     try:
         # Inside the try: status="running" was already committed at claim time,
         # so anything escaping from here leaves the job wedged in "running"
@@ -227,6 +244,9 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         job.has_clip_level_failures = rejected_count > 0
         _set_failure(job, attempt, str(exc), "worker")
         movie.status = "failed"
+        # The renderer may already have moved its output into place; with no
+        # Video row recorded, nothing would ever reference that file.
+        _discard_output(output_movie_id, output_attempt_id)
 
     # Captured before the commit: a rollback expires every ORM object, and
     # reading them afterwards would lazy-load outside any error guard.
@@ -243,6 +263,8 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
             db, job_id, "The render outcome could not be recorded.",
             movie_id=movie_id, attempt_id=attempt_id,
         )
+        # The rollback discarded any Video row, so the file is unreferenced.
+        _discard_output(movie_id, attempt_id)
     return job
 
 
