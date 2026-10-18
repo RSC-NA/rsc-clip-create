@@ -228,25 +228,64 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         _set_failure(job, attempt, str(exc), "worker")
         movie.status = "failed"
 
+    # Captured before the commit: a rollback expires every ORM object, and
+    # reading them afterwards would lazy-load outside any error guard.
+    job_id, movie_id, attempt_id = job.id, movie.id, attempt.id
     try:
         db.commit()
     except Exception:
         # The render may have produced a file, but we could not record it.
         # Leaving the row at "running" would strand the job, so fail it in a
         # fresh transaction rather than letting the exception escape.
-        logger.exception("could not record render outcome job_id=%s", job.id)
+        logger.exception("could not record render outcome job_id=%s", job_id)
         db.rollback()
-        _force_fail(db, job.id, "The render outcome could not be recorded.")
+        _force_fail(
+            db, job_id, "The render outcome could not be recorded.",
+            movie_id=movie_id, attempt_id=attempt_id,
+        )
     return job
 
 
-def _force_fail(db: Session, job_id: str, message: str) -> None:
+def _force_fail(
+    db: Session,
+    job_id: str,
+    message: str,
+    *,
+    movie_id: str | None = None,
+    attempt_id: str | None = None,
+) -> None:
+    """Fail the job, its movie and its latest attempt in one transaction.
+
+    Uses explicit UPDATEs so nothing depends on rolled-back in-memory state.
+    Never raises: on any error it logs and rolls back.
+    """
     try:
+        if movie_id is None or attempt_id is None:
+            row = db.execute(
+                select(RenderJob.movie_id, RenderJob.latest_attempt_id).where(RenderJob.id == job_id)
+            ).first()
+            if row is not None:
+                movie_id = movie_id or row.movie_id
+                attempt_id = attempt_id or row.latest_attempt_id
         db.execute(
             update(RenderJob)
             .where(RenderJob.id == job_id)
             .values(status="failed", final_status_reason=message[:500])
         )
+        if movie_id is not None:
+            db.execute(update(Movie).where(Movie.id == movie_id).values(status="failed"))
+        if attempt_id is not None:
+            db.execute(
+                update(RenderJobAttempt)
+                .where(RenderJobAttempt.id == attempt_id)
+                .values(
+                    status="failed",
+                    failure_stage="worker",
+                    error_summary=message[:500],
+                    error_detail=message,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
         db.commit()
     except Exception:
         logger.exception("could not mark job failed job_id=%s", job_id)

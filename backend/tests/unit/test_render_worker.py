@@ -236,5 +236,50 @@ def test_unexpected_error_does_not_count_pending_clips(db_session):
     assert processed.has_clip_level_failures is False
 
 
+def test_unrecordable_outcome_fails_job_movie_and_attempt(db_session, engine, monkeypatch):
+    """If the final outcome commit raises, the rollback discards the in-memory
+    movie and attempt updates. _force_fail must still mark all three rows
+    failed, or the movie shows as queued forever."""
+    from sqlalchemy.orm import sessionmaker
+
+    movie, job = _movie_with_clips(db_session, 2)
+    movie_id, job_id, attempt_id = movie.id, job.id, job.latest_attempt_id
+
+    state = {"rendered": False, "failed": False}
+
+    def fake_render(clips, output, options=None, on_progress=None):
+        state["rendered"] = True
+        return {"duration": 3.0}
+
+    real_commit = db_session.commit
+
+    def flaky_commit():
+        # Fail only the first commit after rendering: the outcome commit.
+        if state["rendered"] and not state["failed"]:
+            state["failed"] = True
+            raise RuntimeError("database went away")
+        return real_commit()
+
+    monkeypatch.setattr(db_session, "commit", flaky_commit)
+
+    process_next_job(db_session, renderer=fake_render)
+
+    assert state["failed"] is True
+    fresh = sessionmaker(bind=engine, future=True)()
+    try:
+        stored_job = fresh.get(RenderJob, job_id)
+        stored_movie = fresh.get(Movie, movie_id)
+        stored_attempt = fresh.get(RenderJobAttempt, attempt_id)
+        assert stored_job.status == "failed"
+        assert stored_job.final_status_reason == "The render outcome could not be recorded."
+        assert stored_movie.status == "failed"
+        assert stored_attempt.status == "failed"
+        assert stored_attempt.failure_stage == "worker"
+        assert stored_attempt.completed_at is not None
+        assert fresh.query(Video).count() == 0
+    finally:
+        fresh.close()
+
+
 def test_no_queued_job_returns_none(db_session):
     assert process_next_job(db_session, renderer=lambda *a, **k: {}) is None
