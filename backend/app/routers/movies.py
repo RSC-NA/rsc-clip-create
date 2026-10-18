@@ -92,7 +92,7 @@ def _job_response(job: RenderJob) -> RenderJobResponse:
                 technicalDetail=result.technical_detail,
                 providerMessage=result.provider_message,
             )
-            for result in attempt.clip_results
+            for result in sorted(attempt.clip_results, key=lambda r: r.clip_order_index)
         ]
         attempts.append(
             RenderAttemptResponse(
