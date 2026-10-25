@@ -29,15 +29,26 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-def _request_too_large(size: int) -> HTTPException:
-    return HTTPException(
-        status_code=413,
-        detail=(
-            f"That upload is {size / 1e6:.0f} MB; the limit is "
-            f"{settings.max_upload_bytes / 1e6:.0f} MB per request. "
+def _request_too_large(size: int | None = None) -> HTTPException:
+    """Build the per-request 413.
+
+    ``size`` is the declared request size. Pass ``None`` when the total is
+    unknown (chunked bodies): the bytes read so far are at most one chunk past
+    the cap, so reporting them would claim the upload equals the limit.
+    """
+    limit_mb = f"{settings.max_upload_bytes / 1e6:.0f}"
+    if size is None:
+        detail = (
+            f"That upload is over the {limit_mb} MB limit per request. "
             "Upload fewer clips at a time."
-        ),
-    )
+        )
+    else:
+        detail = (
+            f"That upload is {size / 1e6:.0f} MB; the limit is "
+            f"{limit_mb} MB per request. "
+            "Upload fewer clips at a time."
+        )
+    return HTTPException(status_code=413, detail=detail)
 
 
 class ClipUploadRoute(APIRoute):
@@ -67,7 +78,8 @@ class ClipUploadRoute(APIRoute):
                 if message["type"] == "http.request":
                     received += len(message.get("body", b""))
                     if received > settings.max_upload_bytes:
-                        raise _request_too_large(received)
+                        # The total size is unknown; only that it is over the cap.
+                        raise _request_too_large(None)
                 return message
 
             return await handler(Request(request.scope, receive=limited_receive))

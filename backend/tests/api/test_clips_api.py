@@ -442,7 +442,48 @@ def test_over_budget_multipart_batch_is_rejected_without_partial_clips(
     response = client.post("/api/v1/clips", content=content, headers=headers)
 
     assert response.status_code == 413, response.text
-    assert "limit is" in response.json()["detail"]
+    detail = response.json()["detail"]
+    if chunked:
+        # Without Content-Length the total size is unknown.
+        assert "over the" in detail
+        assert "limit per request" in detail
+        assert "limit is" not in detail
+    else:
+        assert detail.startswith("That upload is")
+        assert "limit is" in detail
+    assert db_session.query(Clip).count() == 0
+    assert list((isolated_storage / "clips").iterdir()) == []
+
+
+def test_chunked_over_budget_413_does_not_claim_a_measured_size(
+    client, db_session, isolated_storage, monkeypatch
+):
+    """Without Content-Length the API only knows it read past the cap, so the
+    413 must not report the bytes read so far as the upload size: rounded to
+    whole MB that equals the limit ("That upload is 2 MB; the limit is 2 MB")."""
+    from backend.app.routers import clips as clips_router
+
+    budget = 2_000_000
+    prepared = client.build_request(
+        "POST",
+        "/api/v1/clips",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"x" * (budget + 50_000), "video/mp4"))],
+    )
+    body = prepared.read()
+    monkeypatch.setattr(clips_router.settings, "max_upload_bytes", budget)
+
+    # The first chunk crosses the cap by a single byte; httpx sends it chunked.
+    response = client.post(
+        "/api/v1/clips",
+        content=iter([body[: budget + 1], body[budget + 1 :]]),
+        headers={"content-type": prepared.headers["content-type"]},
+    )
+
+    assert response.status_code == 413, response.text
+    detail = response.json()["detail"]
+    assert "That upload is 2 MB" not in detail
+    assert "over the" in detail
+    assert "limit per request" in detail
     assert db_session.query(Clip).count() == 0
     assert list((isolated_storage / "clips").iterdir()) == []
 
