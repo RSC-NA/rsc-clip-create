@@ -65,10 +65,18 @@ async def discord_login(next: str = "/movies"):
 @router.get("/discord/callback")
 async def discord_callback(
     request: Request,
-    code: str,
-    state: str,
+    code: str | None = None,
+    state: str | None = None,
     db: Session = Depends(get_db),
 ):
+    if not code:
+        # Discord sends ?error=access_denied (and no code) when the user
+        # cancels consent. Send them back to the frontend instead of a 422.
+        response = RedirectResponse(f"{settings.frontend_public_url}/login")
+        response.delete_cookie(settings.oauth_state_cookie_name, path="/")
+        response.delete_cookie(settings.oauth_next_cookie_name, path="/")
+        return response
+
     expected_state = request.cookies.get(settings.oauth_state_cookie_name)
     if not expected_state or expected_state != state:
         raise HTTPException(status_code=400, detail="Invalid OAuth state.")
