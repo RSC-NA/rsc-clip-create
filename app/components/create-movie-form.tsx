@@ -116,7 +116,17 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
           },
         );
         if (!timelineResponse.ok) {
-          throw await readApiError(timelineResponse);
+          const timelineError = await readApiError(timelineResponse);
+          // Best-effort cleanup: without it a failed timeline leaves an empty
+          // draft movie behind and a retry creates a second one. The uploaded
+          // clips stay in the library. A failed cleanup must not replace the
+          // timeline error the user needs to see.
+          try {
+            await fetch(browserApiPath(`/movies/${movie.id}`), { method: "DELETE" });
+          } catch {
+            // Ignore: the timeline error below is the one to report.
+          }
+          throw timelineError;
         }
 
         router.push(`/movies/${movie.id}/edit`);
