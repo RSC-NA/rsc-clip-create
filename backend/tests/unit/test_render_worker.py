@@ -414,5 +414,75 @@ def test_unrecordable_outcome_fails_job_movie_and_attempt(db_session, engine, mo
         fresh.close()
 
 
+def test_requeued_older_movie_does_not_jump_ahead_of_earlier_queued_render(db_session):
+    """A retry reuses the movie's RenderJob row, so RenderJob.created_at is the
+    time of the first render. The worker must claim in the order renders were
+    queued (the latest attempt's created_at), not by when the job row was made."""
+    from datetime import datetime, timezone
+
+    user = User(discord_user_id="456", display_name="Queue Owner")
+    db_session.add(user)
+    db_session.flush()
+
+    def queued_job(title, job_created, attempt_created):
+        movie = Movie(user_id=user.id, title=title)
+        db_session.add(movie)
+        db_session.flush()
+        for index in range(2):
+            clip = Clip(
+                user_id=user.id,
+                original_name=f"{title}-Falcons-player{index}-Gold.mp4",
+                storage_path=f"storage/clips/{title}-{index}.mp4",
+                team="Falcons", player=f"player{index}", tier="Gold", extension="mp4",
+            )
+            db_session.add(clip)
+            db_session.flush()
+            db_session.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=index, overlay_text=""))
+        job = RenderJob(movie_id=movie.id, status="queued", created_at=job_created)
+        db_session.add(job)
+        db_session.flush()
+        attempt = RenderJobAttempt(
+            render_job_id=job.id, attempt_number=1, status="queued", created_at=attempt_created
+        )
+        db_session.add(attempt)
+        db_session.flush()
+        job.latest_attempt_id = attempt.id
+        return job
+
+    day1 = datetime(2026, 1, 1, 9, 0, tzinfo=timezone.utc)
+    day2_1000 = datetime(2026, 1, 2, 10, 0, tzinfo=timezone.utc)
+    day2_1005 = datetime(2026, 1, 2, 10, 5, tzinfo=timezone.utc)
+
+    # Movie A: first rendered on day 1, re-queued on day 2 at 10:05.
+    job_a = queued_job("A", day1, day2_1005)
+    # Movie B: first render queued on day 2 at 10:00.
+    job_b = queued_job("B", day2_1000, day2_1000)
+    db_session.commit()
+    job_a_id, job_b_id = job_a.id, job_b.id
+
+    processed = process_next_job(db_session, renderer=lambda *a, **k: {"duration": 1.0})
+
+    assert processed is not None
+    assert processed.id == job_b_id, "worker claimed the re-queued older movie before the earlier-queued render"
+    assert db_session.get(RenderJob, job_b_id).status != "queued"
+    assert db_session.get(RenderJob, job_a_id).status == "queued"
+
+
+def test_queued_job_without_latest_attempt_is_still_claimed_and_failed(db_session):
+    """The outer join must not hide a queued job whose latest attempt is unset;
+    the missing-attempt path still claims and fails it."""
+    _, job = _movie_with_clips(db_session, 2)
+    job.latest_attempt_id = None
+    db_session.commit()
+    job_id = job.id
+
+    processed = process_next_job(db_session, renderer=lambda *a, **k: {"duration": 1.0})
+
+    assert processed is not None
+    assert processed.id == job_id
+    assert db_session.get(RenderJob, job_id).status == "failed"
+    assert db_session.query(Video).count() == 0
+
+
 def test_no_queued_job_returns_none(db_session):
     assert process_next_job(db_session, renderer=lambda *a, **k: {}) is None
