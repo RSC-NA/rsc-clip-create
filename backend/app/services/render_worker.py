@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from backend.app.config import get_settings
@@ -50,12 +50,18 @@ def _discard_output(movie_id: str, attempt_id: str) -> None:
 def process_next_job(db: Session, renderer=None) -> RenderJob | None:
     """Claim and process the oldest queued render.
 
+    Retries reuse the movie's RenderJob row, so RenderJob.created_at is the time
+    of the movie's first render. Queue order is therefore taken from the job's
+    latest attempt, falling back to the job row for a job with no attempt.
+
     ``renderer`` is an injection seam for tests; production uses ``render_movie``.
     """
+    queued_at = func.coalesce(RenderJobAttempt.created_at, RenderJob.created_at)
     job = db.scalar(
         select(RenderJob)
+        .outerjoin(RenderJobAttempt, RenderJobAttempt.id == RenderJob.latest_attempt_id)
         .where(RenderJob.status == "queued")
-        .order_by(RenderJob.created_at.asc())
+        .order_by(queued_at.asc(), RenderJob.created_at.asc())
         .options(selectinload(RenderJob.attempts))
     )
     if job is None:
