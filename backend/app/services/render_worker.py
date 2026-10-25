@@ -144,7 +144,12 @@ def process_next_job(db: Session, renderer=None) -> RenderJob | None:
         # Inside the try: status="running" was already committed at claim time,
         # so anything escaping from here leaves the job wedged in "running"
         # forever while the editor polls it.
-        db.flush()
+        #
+        # Commit, not just flush: the heartbeat callback rolls back on failure,
+        # and that rollback must only undo the heartbeat UPDATE, never the
+        # DELETE of stale rows or this claim's pending/rejected diagnostics.
+        # The committed objects stay attached and refresh on access.
+        db.commit()
         if len(selected) < settings.min_clip_count:
             raise RenderError(
                 f"At least {settings.min_clip_count} valid clips are required.", "input"
