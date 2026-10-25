@@ -38,6 +38,15 @@ def _current(db: Session, user_id: str) -> BrandSweep | None:
     return db.scalar(select(BrandSweep).where(BrandSweep.user_id == user_id))
 
 
+def _unlink(path: Path) -> None:
+    """Best-effort post-commit file removal. A failure here leaves an orphaned
+    file, which the maintenance audit reports; it must never fail the request."""
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("could not remove %s", path, exc_info=True)
+
+
 def _has_alpha(pix_fmt: str | None) -> bool:
     """Only accept ffprobe pixel formats with an explicit alpha component.
 
@@ -140,7 +149,7 @@ def upload_brand_sweep(
     if existing is not None:
         db.refresh(existing)
         if previous != str(destination):
-            Path(previous).unlink(missing_ok=True)
+            _unlink(Path(previous))
         logger.info("replaced brand sweep user=%s", user.id)
         return _to_response(existing)
 
@@ -177,7 +186,7 @@ def delete_sweep(
     path = Path(sweep.storage_path)
     db.delete(sweep)
     db.commit()
-    path.unlink(missing_ok=True)
+    _unlink(path)
     return None
 
 
