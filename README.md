@@ -34,9 +34,11 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 - `GET /api/v1/movies/{movie_id}`
 - `PUT /api/v1/movies/{movie_id}/timeline`
 - `POST /api/v1/movies/{movie_id}/render`
+- `DELETE /api/v1/movies/{movie_id}`
 - `GET /api/v1/config`
 - `GET /api/v1/clips`
 - `POST /api/v1/clips`
+- `DELETE /api/v1/clips/{clip_id}`
 - `GET /api/v1/sweeps`
 - `POST /api/v1/sweeps`
 - `GET /api/v1/sweeps/{sweep_id}/file`
@@ -44,6 +46,7 @@ Clip Create Studio is a combined `Next.js 16 + FastAPI` application for assembli
 - `GET /api/v1/jobs/{job_id}`
 - `GET /api/v1/videos/{video_id}/location`
 - `GET /api/v1/videos/{video_id}/file`
+- `DELETE /api/v1/videos/{video_id}`
 - `GET /api/v1/admin/dashboard`
 - `GET /api/v1/admin/users`
 - `GET /api/v1/admin/videos`
