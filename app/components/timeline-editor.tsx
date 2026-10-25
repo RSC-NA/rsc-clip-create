@@ -68,6 +68,9 @@ export function TimelineEditor({
   // tear the interval down and recreate it every 1.5s.
   const jobId = job?.id;
   const jobStatus = job?.status;
+  // The backend answers 409 to both PUT /timeline and POST /render while a
+  // job is queued or running; the poll below clears this once it finishes.
+  const renderActive = jobStatus === "queued" || jobStatus === "running";
 
   useEffect(() => {
     if (!jobId || !["queued", "running"].includes(jobStatus ?? "")) return;
@@ -130,6 +133,7 @@ export function TimelineEditor({
   }
 
   function saveTimeline() {
+    if (renderActive) return;
     startTransition(async () => {
       setError(null);
       try {
@@ -167,6 +171,7 @@ export function TimelineEditor({
   }
 
   function queueRender() {
+    if (renderActive) return;
     startTransition(async () => {
       setError(null);
       try {
@@ -206,7 +211,7 @@ export function TimelineEditor({
             </button>
             <button
               className="button button-primary"
-              disabled={isPending}
+              disabled={isPending || renderActive}
               onClick={saveTimeline}
               type="button"
             >
@@ -340,12 +345,17 @@ export function TimelineEditor({
           <div className="stack-sm">
             <button
               className="button button-primary"
-              disabled={isPending || filledSlots < minClipCount || dirty}
+              disabled={isPending || filledSlots < minClipCount || dirty || renderActive}
               onClick={queueRender}
               type="button"
             >
               Queue Render
             </button>
+            {renderActive ? (
+              <p className="text-soft">
+                Wait for the current render to finish before saving or rendering.
+              </p>
+            ) : null}
             {dirty ? (
               <p className="text-soft">Save the timeline before rendering.</p>
             ) : null}
