@@ -270,8 +270,31 @@ Every value has a working default. The ones you are most likely to change:
 | `FASTAPI_PUBLIC_URL` | `http://localhost:8000` | Browser-facing; the API builds absolute download and brand sweep URLs from it, so it must be reachable from the host, not from inside the compose network. |
 | `SECURE_COOKIES` | `false` | Set to `true` behind HTTPS. |
 | `MAX_UPLOAD_BYTES` | `536870912` (512 MB) | **Total bytes per upload request**, across every file in it. See below. |
-| `RENDER_BRAND_SWEEP_PATH` | the bundled sweep | Deployment-wide override for the stinger played over every cut. An account's own upload still wins. |
-| `MAX_BRAND_SWEEP_BYTES` | `209715200` (200 MB) | Cap on a brand sweep upload. The bundled file is 90MB; alpha-capable codecs are not small. |
+| `RENDER_BRAND_SWEEP_PATH` | the bundled sweep | Deployment-wide override for the stinger played over every cut. An account's own upload still wins. **Not forwarded by compose** — set it on the `worker` service in `docker-compose.yml` (see below). |
+| `MAX_BRAND_SWEEP_BYTES` | `209715200` (200 MB) | Cap on a brand sweep upload. The bundled file is 90MB; alpha-capable codecs are not small. **Not forwarded by compose** — set it on the `api` service in `docker-compose.yml` (see below). |
+
+**`RENDER_BRAND_SWEEP_PATH` and `MAX_BRAND_SWEEP_BYTES` are set in `docker-compose.yml`,
+not in `.env`.** The compose file does not pass either one through to the containers, so
+putting them in `./.env` or the file given to `--env-file` (e.g. `.env.docker`) has no
+effect: the worker keeps using the bundled sweep and the API keeps the 200MB cap. Add
+them to the `environment:` block of the right service, the same way as `RENDER_FONT_PATH`
+above — `RENDER_BRAND_SWEEP_PATH` on the `worker`, because that is where renders run, and
+`MAX_BRAND_SWEEP_BYTES` on the `api`, because the API enforces the upload cap:
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    environment:
+      MAX_BRAND_SWEEP_BYTES: 314572800
+  worker:
+    environment:
+      RENDER_BRAND_SWEEP_PATH: /app/storage/stings/my-sweep.mov
+```
+
+Add these lines to the existing `environment:` entries of each service rather than
+replacing them. The sweep file must be readable inside the worker container, for example
+under the shared `/app/storage` volume.
 
 ### Upload size
 
