@@ -178,6 +178,109 @@ def test_heartbeat_is_refreshed_during_a_render(db_session):
     assert all(result.status == "accepted" for result in results)
 
 
+def _render_with_failing_heartbeat(db_session, monkeypatch, *, with_invalid_clip):
+    """Run process_next_job with a renderer whose single heartbeat UPDATE fails.
+
+    Returns the reloaded job and the attempt's clip results.
+    """
+    from sqlalchemy.exc import OperationalError
+    from sqlalchemy.sql.dml import Update
+
+    from backend.app.models import Clip, MovieSlot, RenderJobAttempt, RenderJobClipResult
+    from backend.app.services.render_worker import process_next_job
+
+    user = User(discord_user_id=str(uuid.uuid4()), display_name="U")
+    db_session.add(user)
+    db_session.flush()
+    movie = Movie(user_id=user.id, title="M")
+    db_session.add(movie)
+    db_session.flush()
+    for index in range(2):
+        clip = Clip(
+            user_id=user.id, original_name=f"T-p{index}-G.mp4",
+            storage_path=f"/clip{index}.mp4", team="T", player=f"p{index}",
+            tier="G", extension="mp4",
+        )
+        db_session.add(clip)
+        db_session.flush()
+        db_session.add(MovieSlot(movie_id=movie.id, clip_id=clip.id, sort_index=index))
+    if with_invalid_clip:
+        bad = Clip(
+            user_id=user.id, original_name="T--G.mp4", storage_path="/bad.mp4",
+            team="T", player="", tier="G", extension="mp4",
+        )
+        db_session.add(bad)
+        db_session.flush()
+        db_session.add(MovieSlot(movie_id=movie.id, clip_id=bad.id, sort_index=2))
+    job = RenderJob(movie_id=movie.id, status="queued")
+    db_session.add(job)
+    db_session.flush()
+    attempt = RenderJobAttempt(render_job_id=job.id, attempt_number=1)
+    db_session.add(attempt)
+    db_session.flush()
+    job.latest_attempt_id = attempt.id
+    job_id, attempt_id = job.id, attempt.id
+    db_session.commit()
+
+    real_execute = db_session.execute
+    rendering = {"on": False, "beats": 0}
+
+    def flaky_execute(statement, *args, **kwargs):
+        if rendering["on"] and isinstance(statement, Update):
+            raise OperationalError("UPDATE render_jobs", {}, Exception("database blip"))
+        return real_execute(statement, *args, **kwargs)
+
+    monkeypatch.setattr(db_session, "execute", flaky_execute)
+
+    def renderer(clips, output, options=None, on_progress=None):
+        rendering["on"] = True
+        try:
+            on_progress()  # The heartbeat UPDATE fails and is rolled back.
+            rendering["beats"] += 1
+        finally:
+            rendering["on"] = False
+        return {"duration": 1.0}
+
+    process_next_job(db_session, renderer=renderer)
+    monkeypatch.undo()
+    assert rendering["beats"] == 1
+
+    db_session.expire_all()
+    recovered = db_session.get(RenderJob, job_id)
+    results = db_session.scalars(
+        select(RenderJobClipResult).where(RenderJobClipResult.render_job_attempt_id == attempt_id)
+    ).all()
+    return recovered, results
+
+
+def test_failed_first_heartbeat_keeps_clip_results(db_session, monkeypatch):
+    """A heartbeat rollback must not discard the attempt's uncommitted clip
+    diagnostics (accepted and rejected rows)."""
+    recovered, results = _render_with_failing_heartbeat(
+        db_session, monkeypatch, with_invalid_clip=True
+    )
+    assert recovered.status == "succeeded"
+    assert recovered.failed_clip_count == 1
+    accepted = [r for r in results if r.status == "accepted"]
+    invalid = [r for r in results if r.reason_code == "invalid_metadata"]
+    assert len(accepted) == 2, [(r.status, r.reason_code) for r in results]
+    assert len(invalid) == 1, [(r.status, r.reason_code) for r in results]
+    assert len(results) == 3
+
+
+def test_failed_first_heartbeat_keeps_accepted_results_for_valid_clips(db_session, monkeypatch):
+    """With only valid clips, a failed heartbeat still leaves one accepted row
+    per rendered clip and nothing else."""
+    recovered, results = _render_with_failing_heartbeat(
+        db_session, monkeypatch, with_invalid_clip=False
+    )
+    assert recovered.status == "succeeded"
+    assert recovered.accepted_clip_count == 2
+    assert recovered.failed_clip_count == 0
+    assert len(results) == 2, [(r.status, r.reason_code) for r in results]
+    assert all(r.status == "accepted" for r in results)
+
+
 def test_requeued_render_after_committed_heartbeat_has_only_accepted_clip_results(db_session, engine):
     """A dead worker's committed diagnostics must not be duplicated on recovery."""
     from backend.app.models import Clip, MovieSlot, RenderJobAttempt, RenderJobClipResult
