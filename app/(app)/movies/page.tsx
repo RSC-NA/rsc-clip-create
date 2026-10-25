@@ -7,7 +7,7 @@ import { getMovies } from "@/app/lib/api";
 
 export default async function MoviesPage() {
   const movies = await getMovies();
-  const activeMovies = movies.filter((movie) => movie.status !== "archived");
+  const activeMovies = movies.filter((movie) => movie.status !== "succeeded");
   const videosReady = movies.filter((movie) => movie.latestVideo).length;
 
   return (
