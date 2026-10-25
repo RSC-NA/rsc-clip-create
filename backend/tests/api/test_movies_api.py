@@ -164,6 +164,62 @@ def test_another_users_clip_cannot_be_placed(client, make_movie, make_clip, othe
     assert response.status_code == 400
 
 
+def test_empty_string_clip_id_is_400_not_500_and_changes_nothing(
+    client, make_movie, make_clip
+):
+    """An empty clip_id is a clip that does not exist, not "no clip"."""
+    movie = make_movie()
+    url = f"/api/v1/movies/{movie.id}"
+
+    response = client.put(
+        f"{url}/timeline",
+        json={"slots": [{"id": None, "sort_index": 0, "clip_id": "", "overlay_text": ""}]},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "One selected clip is not available to this user."
+    detail = client.get(url)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["slotCount"] == 0
+    assert detail.json()["slots"] == []
+
+    clip = make_clip()
+    existing_movie = make_movie(clips=[clip])
+    existing_url = f"/api/v1/movies/{existing_movie.id}"
+    original = client.get(existing_url).json()
+    slot_id = original["slots"][0]["id"]
+
+    changed = client.put(
+        f"{existing_url}/timeline",
+        json={"slots": [{"id": slot_id, "sort_index": 0, "clip_id": "", "overlay_text": ""}]},
+    )
+    assert changed.status_code == 400, changed.text
+    assert changed.json()["detail"] == "One selected clip is not available to this user."
+    unchanged = client.get(existing_url).json()
+    assert unchanged["slotCount"] == 1
+    assert unchanged["slots"][0]["id"] == slot_id
+    assert unchanged["slots"][0]["clipId"] == clip.id
+
+
+def test_empty_string_clip_id_after_valid_new_slot_creates_nothing(client, make_movie, make_clip):
+    """A valid new slot earlier in the payload is not persisted when a later one is rejected."""
+    movie = make_movie()
+    clip = make_clip()
+    url = f"/api/v1/movies/{movie.id}"
+
+    response = client.put(
+        f"{url}/timeline",
+        json={"slots": [
+            {"id": None, "sort_index": 0, "clip_id": clip.id, "overlay_text": ""},
+            {"id": None, "sort_index": 1, "clip_id": "", "overlay_text": ""},
+        ]},
+    )
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "One selected clip is not available to this user."
+    detail = client.get(url).json()
+    assert detail["slotCount"] == 0
+    assert detail["slots"] == []
+
+
 def test_retired_transition_fields_are_ignored_not_rejected(client, make_movie, make_clip):
     """An editor tab left open across the deploy still saves its timeline."""
     movie = make_movie()
