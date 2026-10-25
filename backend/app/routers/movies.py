@@ -254,18 +254,23 @@ def update_timeline(
     if len(sort_indices) != len(set(sort_indices)):
         raise HTTPException(status_code=400, detail="Timeline slots must have distinct sort indices.")
 
-    movie.status = "editing"
-    retained_ids: set[str] = set()
+    # Validate every clip before touching any slot, so a rejected request
+    # leaves the timeline exactly as it was. Only None means "empty slot";
+    # any other value, including "", must name a clip owned by this user.
     assigned_clip_ids: set[str] = set()
-
     for slot_payload in payload.slots:
-        if slot_payload.clip_id:
+        if slot_payload.clip_id is not None:
             clip = db.scalar(select(Clip).where(Clip.id == slot_payload.clip_id, Clip.user_id == user.id))
             if clip is None:
                 raise HTTPException(status_code=400, detail="One selected clip is not available to this user.")
             if slot_payload.clip_id in assigned_clip_ids:
                 raise HTTPException(status_code=400, detail="A clip cannot be assigned to multiple timeline positions.")
             assigned_clip_ids.add(slot_payload.clip_id)
+
+    movie.status = "editing"
+    retained_ids: set[str] = set()
+
+    for slot_payload in payload.slots:
         slot = existing_by_id.get(slot_payload.id or "")
         if slot is None:
             # Populate before flushing: sort_index is NOT NULL, so flushing a
