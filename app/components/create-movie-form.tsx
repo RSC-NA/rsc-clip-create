@@ -6,6 +6,18 @@ import { browserApiPath } from "@/app/lib/browser-api";
 import { readApiError } from "@/app/lib/api-error";
 import type { ClientConfig } from "@/app/lib/types";
 
+// POST /clips stores each clip as `<uuid4>-<filename>` and rejects it when that
+// is over MAX_FILENAME_BYTES (255, backend/app/storage.py). The UUID and its
+// hyphen take 37 bytes, leaving 218 UTF-8 bytes for the clip's own name.
+const MAX_CLIP_NAME_BYTES = 255 - 37;
+
+// UTF-8 byte length, as Python's str.encode("utf-8") measures it on the API.
+const utf8Length = (value: string) =>
+  Array.from(value).reduce((total, char) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    return total + (codePoint < 0x80 ? 1 : codePoint < 0x800 ? 2 : codePoint < 0x10000 ? 3 : 4);
+  }, 0);
+
 const mb = (bytes: number) => Math.round(bytes / 1_000_000);
 // 31 reads better than 31.0; 15.6 still needs its decimal.
 const seconds = (value: number) =>
@@ -40,6 +52,13 @@ export function CreateMovieForm({ config }: { config: ClientConfig }) {
       if (!config.supportedExtensions.includes(extension)) {
         throw new Error(
           `${file.name} uses .${extension}. Supported: ${config.supportedExtensions.join(", ")}.`,
+        );
+      }
+      const nameBytes = utf8Length(file.name);
+      if (nameBytes > MAX_CLIP_NAME_BYTES) {
+        throw new Error(
+          `${file.name} is too long: ${nameBytes} bytes; the limit is ` +
+            `${MAX_CLIP_NAME_BYTES} UTF-8 bytes per clip name.`,
         );
       }
       if (file.size > config.maxClipSizeBytes) {
