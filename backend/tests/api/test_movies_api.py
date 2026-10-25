@@ -600,5 +600,66 @@ def test_clip_results_are_returned_in_timeline_order(client, db_session, make_mo
     assert [r["clipOrderIndex"] for r in detail_results] == [0, 1]
 
 
+def _parse_ts(value):
+    from datetime import datetime
+
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+
+
+def test_timeline_save_on_editing_movie_advances_updated_at(
+    client, db_session, make_movie, make_clip, other_user
+):
+    """A save on a movie already in "editing" must still bump updatedAt, so the
+    Movies list order and its Updated column reflect the latest timeline edit."""
+    from datetime import datetime
+
+    old = datetime(2020, 1, 1)
+    clip = make_clip()
+    movie = make_movie("Old edit", status="editing", updated_at=old)
+    newer = make_movie("Newer", status="editing", updated_at=datetime(2021, 1, 1))
+    url = f"/api/v1/movies/{movie.id}"
+
+    # Precondition: the older movie sorts last before the save.
+    assert [m["id"] for m in client.get("/api/v1/movies").json()] == [newer.id, movie.id]
+
+    # A rejected save (foreign clip) leaves updated_at alone.
+    foreign = make_clip("Ravens-Bo-Silver.mp4", owner=other_user)
+    rejected = client.put(f"{url}/timeline", json=_slot_payload([foreign]))
+    assert rejected.status_code == 400, rejected.text
+    db_session.rollback()
+    db_session.expire_all()
+    assert _parse_ts(client.get(url).json()["updatedAt"]) == old
+
+    saved = client.put(f"{url}/timeline", json=_slot_payload([clip]))
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["status"] == "editing"
+    assert _parse_ts(saved.json()["updatedAt"]) > old
+
+    db_session.expire_all()
+    assert _parse_ts(client.get(url).json()["updatedAt"]) > old
+    listed = client.get("/api/v1/movies").json()
+    assert [m["id"] for m in listed] == [movie.id, newer.id]
+
+
+def test_timeline_save_rejected_by_active_render_leaves_updated_at(
+    client, db_session, make_movie, make_clip
+):
+    """A 409 (render queued) must not touch the movie row either."""
+    from datetime import datetime
+
+    old = datetime(2020, 1, 1)
+    clip = make_clip()
+    movie = make_movie("Rendering", status="editing", updated_at=old)
+    db_session.add(RenderJob(movie_id=movie.id, status="queued"))
+    db_session.commit()
+    url = f"/api/v1/movies/{movie.id}"
+
+    rejected = client.put(f"{url}/timeline", json=_slot_payload([clip]))
+    assert rejected.status_code == 409, rejected.text
+    db_session.rollback()
+    db_session.expire_all()
+    assert _parse_ts(client.get(url).json()["updatedAt"]) == old
+
+
 def test_movie_detail_has_no_job_before_the_first_render(client, make_movie):
     assert client.get(f"/api/v1/movies/{make_movie().id}").json()["latestJob"] is None
