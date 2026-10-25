@@ -5,9 +5,9 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { test } from "node:test";
 import vm from "node:vm";
-import ts from "typescript";
 
 const require = createRequire(import.meta.url);
+const ts = require(process.env.TYPESCRIPT_MODULE || "typescript");
 const source = readFileSync(path.resolve(import.meta.dirname, "../app/components/create-movie-form.tsx"), "utf8");
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX },
@@ -48,7 +48,14 @@ function mountCreateMovieForm(overrides = {}) {
     exports,
     require(specifier) {
       if (specifier === "react") return hooks;
-      if (specifier === "react/jsx-runtime") return require(specifier);
+      if (specifier === "react/jsx-runtime") {
+        // A runner without node_modules gets a minimal element factory; the
+        // tests only inspect the rendered tree.
+        try { return require(specifier); } catch {
+          const element = (type, props) => ({ type, props });
+          return { jsx: element, jsxs: element, Fragment: "Fragment" };
+        }
+      }
       if (specifier === "next/navigation") return { useRouter: () => ({ push() {}, refresh() {} }) };
       if (specifier === "@/app/lib/browser-api") return { browserApiPath: (p) => `/api/backend${p}` };
       if (specifier === "@/app/lib/api-error") return { readApiError: async () => new Error("API error") };
@@ -158,7 +165,10 @@ const servedFilenamePattern = String.raw`^${segment}-${segment}-${segment}\.[A-Z
 
 test("Create Movie preflight counts emoji in a clip name as one character each, like the API", async () => {
   const eagle = "\u{1F985}";
-  for (const [team, accepted] of [[eagle.repeat(41), true], [eagle.repeat(80), true], [eagle.repeat(81), false]]) {
+  // 41 eagles are 82 UTF-16 code units but 41 code points, so the pattern accepts
+  // them. 80 eagles also fit the pattern, but at 333 UTF-8 bytes the name is over
+  // the 218-byte storage limit (see the byte-limit test below), so they are refused.
+  for (const [team, accepted] of [[eagle.repeat(41), true], [eagle.repeat(81), false]]) {
     const form = mountCreateMovieForm({ filenamePattern: servedFilenamePattern });
     const name = `${team}-Ace-Gold.mp4`;
     form.enterTitle("Spring launch");
@@ -175,6 +185,36 @@ test("Create Movie preflight counts emoji in a clip name as one character each, 
       assert.deepEqual(form.posts, []);
     }
   }
+});
+
+test("Create Movie refuses a clip name over 218 UTF-8 bytes before any request, but uploads 218", async () => {
+  // POST /clips stores `<uuid4>-<filename>` and rejects it over MAX_FILENAME_BYTES (255),
+  // so the 37-byte prefix leaves 218 bytes for the filename.
+  const tooLong = "A".repeat(80) + "-" + "B".repeat(80) + "-" + "C".repeat(60) + ".mp4";
+  const exact = "A".repeat(80) + "-" + "B".repeat(80) + "-" + "C".repeat(52) + ".mp4";
+  const emoji = "\u{1F985}".repeat(80) + "-Ace-Gold.mp4";
+  assert.equal(Buffer.byteLength(tooLong, "utf8"), 226);
+  assert.equal(Buffer.byteLength(exact, "utf8"), 218);
+  assert.ok(Buffer.byteLength(emoji, "utf8") > 218);
+
+  for (const name of [tooLong, emoji]) {
+    const form = mountCreateMovieForm({ filenamePattern: servedFilenamePattern });
+    form.enterTitle("Spring launch");
+    form.selectClips([new File([new Uint8Array(16)], name, { type: "video/mp4" })]);
+    await form.clickCreate();
+    assert.deepEqual(form.posts, [], `${Buffer.byteLength(name, "utf8")}-byte name must not reach /clips or /movies`);
+    const message = form.error();
+    assert.ok(message, "an alert must explain the refusal");
+    assert.ok(message.includes(name), "the alert names the file");
+    assert.match(message, /too long/);
+  }
+
+  const form = mountCreateMovieForm({ filenamePattern: servedFilenamePattern });
+  form.enterTitle("Spring launch");
+  form.selectClips([new File([new Uint8Array(16)], exact, { type: "video/mp4" })]);
+  await form.clickCreate();
+  assert.equal(form.error(), null);
+  assert.deepEqual(form.posts.map(({ url }) => url), ["/api/backend/clips", "/api/backend/movies"]);
 });
 
 test("Create Movie rejects a 256-character title before either POST, but accepts 255", async () => {
