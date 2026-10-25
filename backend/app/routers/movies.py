@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, selectinload
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -268,6 +268,10 @@ def update_timeline(
             assigned_clip_ids.add(slot_payload.clip_id)
 
     movie.status = "editing"
+    # Bump explicitly: onupdate only fires when the movies row itself changes,
+    # and re-assigning "editing" to an already-editing movie is not a change,
+    # so slot-only saves would otherwise leave updated_at (and list order) stale.
+    movie.updated_at = func.now()
     retained_ids: set[str] = set()
 
     for slot_payload in payload.slots:
@@ -304,6 +308,8 @@ def update_timeline(
             db.delete(slot)
 
     db.commit()
+    # Reload so updatedAt is the stored timestamp, not the SQL expression.
+    db.refresh(movie)
     return get_movie(movie_id, db, user)
 
 
