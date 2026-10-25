@@ -13,7 +13,7 @@ from backend.app.database import get_db
 from backend.app.deps import get_current_user
 from backend.app.config import get_settings
 from backend.app.filename_parser import parse_clip_filename
-from backend.app.models import Clip, Movie, MovieSlot, RenderJobClipResult, User
+from backend.app.models import Clip, Movie, MovieSlot, RenderJob, RenderJobClipResult, User
 from backend.app.schemas import ClipResponse
 from backend.app.storage import (
     MAX_FILENAME_BYTES,
@@ -119,6 +119,19 @@ def upload_clips(
         movie = db.scalar(select(Movie).where(Movie.id == movie_id, Movie.user_id == user.id))
         if movie is None:
             raise HTTPException(status_code=404, detail="Movie not found.")
+        # Same lock as PUT /movies/{id}/timeline: the worker reads movie.slots
+        # when it claims the job, so new slots would leak into that render.
+        active = db.scalar(
+            select(RenderJob).where(
+                RenderJob.movie_id == movie.id,
+                RenderJob.status.in_(["queued", "running"]),
+            )
+        )
+        if active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail="A render is already queued or running for this movie.",
+            )
 
     parsed_files = []
     storage_names = []

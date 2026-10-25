@@ -301,6 +301,73 @@ def test_uploading_to_owned_movie_saves_clip_and_slot(
     assert len(list((isolated_storage / "clips").iterdir())) == 1
 
 
+@pytest.mark.parametrize("status", ["queued", "running"])
+def test_uploading_to_a_movie_with_an_active_render_is_refused(
+    client, db_session, isolated_storage, monkeypatch, make_movie, make_clip, status
+):
+    """Like PUT /movies/{id}/timeline, a queued or running render locks the
+    movie's slots: the worker reads movie.slots when it claims the job."""
+    from backend.app.models import RenderJob
+    from backend.app.routers import clips as clips_router
+
+    movie = make_movie(clips=[make_clip()])
+    db_session.add(RenderJob(movie_id=movie.id, status=status))
+    db_session.commit()
+    slots_before = db_session.query(MovieSlot).filter_by(movie_id=movie.id).count()
+    clips_before = db_session.query(Clip).count()
+    files_before = set((isolated_storage / "clips").iterdir())
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = client.post(
+        f"/api/v1/clips?movie_id={movie.id}",
+        files=[("files", ("Falcons-Ace-Gold.mp4", b"video bytes", "video/mp4"))],
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == "A render is already queued or running for this movie."
+    db_session.expire_all()
+    assert db_session.query(MovieSlot).filter_by(movie_id=movie.id).count() == slots_before
+    assert db_session.query(Clip).count() == clips_before
+    assert set((isolated_storage / "clips").iterdir()) == files_before
+
+
+def test_uploading_to_a_movie_with_a_finished_render_appends_slots(
+    client, db_session, isolated_storage, monkeypatch, make_movie, make_clip
+):
+    from backend.app.models import RenderJob
+    from backend.app.routers import clips as clips_router
+
+    movie = make_movie(clips=[make_clip()])
+    db_session.add(RenderJob(movie_id=movie.id, status="succeeded"))
+    db_session.commit()
+    slots_before = db_session.query(MovieSlot).filter_by(movie_id=movie.id).count()
+
+    monkeypatch.setattr(
+        clips_router, "probe_media", lambda path, strict: {"has_video": True, "duration": 1.0}
+    )
+    response = client.post(
+        f"/api/v1/clips?movie_id={movie.id}",
+        files=[
+            ("files", ("Falcons-Ace-Gold.mp4", b"video bytes", "video/mp4")),
+            ("files", ("Ravens-Bo-Silver.mp4", b"more bytes", "video/mp4")),
+        ],
+    )
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()) == 2
+    db_session.expire_all()
+    slots = (
+        db_session.query(MovieSlot)
+        .filter_by(movie_id=movie.id)
+        .order_by(MovieSlot.sort_index)
+        .all()
+    )
+    assert len(slots) == slots_before + 2
+    assert [slot.clip_id for slot in slots[slots_before:]] == [c["id"] for c in response.json()]
+
+
 def test_uploading_without_movie_id_saves_clip_only(
     client, db_session, isolated_storage, monkeypatch
 ):
